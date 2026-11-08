@@ -67,6 +67,11 @@ const I = {
   scale:'<path d="M5 21h14l-1-14H6z"/><path d="M9 7a3 3 0 0 1 6 0"/>',
   play:'<path d="M7 4l13 8-13 8z"/>',
   search:'<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  chat:'<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
+  camera:'<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  file:'<path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/>',
+  send:'<path d="M4 12 20 4l-6 16-3-7z"/>',
+  upload:'<path d="M12 16V4M7 9l5-5 5 5M5 20h14"/>',
 };
 const icon = (n, fill) => `<svg viewBox="0 0 24 24" fill="${fill ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${I[n]}</svg>`;
 
@@ -80,6 +85,9 @@ const TABLES = {
   nutrition_plans: ['id','client_id','name','kcal','protein_g','carbs_g','fat_g','water_l','meals','guidelines','active'],
   workout_logs: ['id','client_id','plan_id','day_name','date','entries','rpe','notes'],
   body_metrics: ['id','client_id','date','weight_kg','waist_cm','hip_cm','chest_cm','arm_cm','thigh_cm','body_fat','sleep','stress','energy','notes'],
+  messages: ['id','client_id','sender_id','body'],
+  progress_photos: ['id','client_id','date','pose','path','notes'],
+  documents: ['id','client_id','name','kind','path','size_bytes'],
 };
 const PROFILE_FIELDS_CLIENT = ['full_name','phone','birth_date','height_cm','goal'];
 const PROFILE_FIELDS_COACH = [...PROFILE_FIELDS_CLIENT, 'status', 'notes'];
@@ -132,6 +140,20 @@ function SupabaseAPI(){
     metrics: cid => list('body_metrics', cid, 'date', true),
     saveMetric: row => upsert('body_metrics', row),
     deleteMetric: id => del('body_metrics', id),
+    // Mensajes
+    messages: cid => sb.from('messages').select('*').eq('client_id', cid).order('created_at', {ascending:true}).limit(500).then(ok),
+    sendMessage: row => sb.from('messages').upsert(pick(row, TABLES.messages)).select().single().then(ok),
+    async markRead(cid, meId){ await sb.from('messages').update({read_at: new Date().toISOString()}).eq('client_id', cid).neq('sender_id', meId).is('read_at', null).then(ok); },
+    async unread(meId){ const rows = await sb.from('messages').select('client_id').neq('sender_id', meId).is('read_at', null).limit(2000).then(ok); const m = {}; rows.forEach(r => { m[r.client_id] = (m[r.client_id] || 0) + 1; }); return m; },
+    subscribe(cb){ const ch = sb.channel('mensajes').on('postgres_changes', {event:'INSERT', schema:'public', table:'messages'}, p => cb(p.new)).subscribe(); return () => sb.removeChannel(ch); },
+    // Fotos y documentos (almacenamiento privado)
+    photos: cid => list('progress_photos', cid, 'date', false),
+    async uploadPhoto(row, blob){ const path = `${row.client_id}/photos/${row.id}.jpg`; ok(await sb.storage.from('jpr').upload(path, blob, {contentType:'image/jpeg', upsert:true})); return upsert('progress_photos', {...row, path}); },
+    async deletePhoto(row){ await sb.storage.from('jpr').remove([row.path]); return del('progress_photos', row.id); },
+    async fileUrls(paths){ if (!paths.length) return {}; const data = ok(await sb.storage.from('jpr').createSignedUrls(paths, 3600)); const m = {}; data.forEach(d => { if (d.signedUrl) m[d.path] = d.signedUrl; }); return m; },
+    docs: cid => list('documents', cid),
+    async uploadDoc(row, file){ const safe = (file.name || 'documento.pdf').normalize('NFD').replace(/[^\w.-]+/g, '_'); const path = `${row.client_id}/docs/${row.id}-${safe}`; ok(await sb.storage.from('jpr').upload(path, file, {contentType:'application/pdf', upsert:true})); return upsert('documents', {...row, path, size_bytes: file.size}); },
+    async deleteDoc(row){ await sb.storage.from('jpr').remove([row.path]); return del('documents', row.id); },
   };
 }
 
@@ -140,6 +162,19 @@ function DemoAPI(){
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || seed(); } catch(e){ return mem || (mem = seed()); } };
   let mem = null;
   let db = load();
+  ['messages','progress_photos','documents'].forEach(k => { if (!db[k]) db[k] = []; });
+  let listeners = [];
+  const files = {};
+  const putFile = async (path, blob) => {
+    files[path] = URL.createObjectURL(blob);
+    try { const d = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(blob); }); localStorage.setItem('jpr-demo-file:' + path, d); } catch(e){}
+  };
+  const getFile = path => {
+    if (files[path]) return files[path];
+    try { const d = localStorage.getItem('jpr-demo-file:' + path); if (d){ files[path] = URL.createObjectURL(dataURLtoBlob(d)); return files[path]; } } catch(e){}
+    return null;
+  };
+  const delFile = path => { delete files[path]; try { localStorage.removeItem('jpr-demo-file:' + path); } catch(e){} };
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch(e){ mem = db; } };
   const now = () => new Date().toISOString();
   const wait = v => new Promise(r => setTimeout(() => r(clone(v)), 60));
@@ -181,7 +216,25 @@ function DemoAPI(){
     metrics: cid => wait(byClient('body_metrics', cid).sort((a,b) => a.date.localeCompare(b.date))),
     saveMetric: row => upsert('body_metrics', row),
     deleteMetric: id => del('body_metrics', id),
+    messages: cid => wait(db.messages.filter(m => m.client_id === cid).sort((a,b) => a.created_at.localeCompare(b.created_at))),
+    async sendMessage(row){ const r = {...pick(row, TABLES.messages), read_at: null, created_at: now()}; r.id = r.id || uid(); db.messages = db.messages.filter(m => m.id !== r.id); db.messages.push(r); save(); setTimeout(() => listeners.forEach(f => f(clone(r))), 30); return wait(r); },
+    async markRead(cid, meId){ db.messages.forEach(m => { if (m.client_id === cid && m.sender_id !== meId && !m.read_at) m.read_at = now(); }); save(); },
+    async unread(meId){ const m = {}; db.messages.forEach(r => { if (r.sender_id !== meId && !r.read_at && (sess === 'demo-coach' || r.client_id === sess)) m[r.client_id] = (m[r.client_id] || 0) + 1; }); return m; },
+    subscribe(cb){ listeners.push(cb); return () => { listeners = listeners.filter(f => f !== cb); }; },
+    photos: cid => wait(byClient('progress_photos', cid).sort((a,b) => b.date.localeCompare(a.date))),
+    async uploadPhoto(row, blob){ const path = `${row.client_id}/photos/${row.id}.jpg`; await putFile(path, blob); return upsert('progress_photos', {...row, path}); },
+    async deletePhoto(row){ delFile(row.path); return del('progress_photos', row.id); },
+    async fileUrls(paths){ const m = {}; paths.forEach(p => { const u = getFile(p); if (u) m[p] = u; }); return m; },
+    docs: cid => wait(byClient('documents', cid).sort((a,b) => b.created_at.localeCompare(a.created_at))),
+    async uploadDoc(row, file){ const path = `${row.client_id}/docs/${row.id}.pdf`; await putFile(path, file); return upsert('documents', {...row, path, size_bytes: file.size}); },
+    async deleteDoc(row){ delFile(row.path); return del('documents', row.id); },
   };
+}
+
+function dataURLtoBlob(d){
+  const [h, b64] = d.split(','); const mime = (h.match(/:(.*?);/) || [])[1] || 'application/octet-stream';
+  const bin = atob(b64); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], {type: mime});
 }
 
 function seed(){
@@ -219,7 +272,14 @@ function seed(){
       {name:'Merienda', time:'18:00', notes:'', options: opt('1 yogur griego natural + 1 fruta','Tostada integral (35 g) + 50 g de pavo','30 g de proteína + 1 plátano','Batido: 200 ml de leche + 1 fruta + 15 g de crema de cacahuete','150 g de requesón + canela + 10 g de nueces','2 tortitas de arroz + 40 g de hummus + 1 fruta','1 pieza de fruta + 1 vaso de kéfir')},
       {name:'Cena', time:'21:30', notes:'', options: opt('Tortilla de 2 huevos + 2 claras con verduras + 1 tostada','200 g de pescado blanco + ensalada grande + 1 cucharada de aceite','150 g de pollo + verduras al horno + 100 g de patata','Ensalada de atún: 2 latas + huevo + maíz (50 g) + verdura','150 g de gambas o sepia a la plancha + revuelto de setas','Crema de verduras + 150 g de pavo o pollo','2 hamburguesas de pollo caseras + ensalada + 1 yogur')},
     ]};
-  return { profiles:[coach, ana, luis, marta], workout_plans:[plan], nutrition_plans:[nut], workout_logs: logs, body_metrics: mets };
+  const msg = (from, body, n, read = true) => ({id: uid(), client_id:'demo-ana', sender_id: from, body, created_at: ts(n), read_at: read ? ts(n) : null});
+  const messages = [
+    msg('demo-coach', '¡Bienvenida, Ana! Ya tienes tu plan en la app. Cualquier duda me escribes por aquí.', 50),
+    msg('demo-ana', '¡Gracias! Una duda: en la sentadilla, ¿bajo hasta paralelo?', 49.9),
+    msg('demo-coach', 'Sí, hasta paralelo y sin rebotar. Si notas la rodilla, te quedas un poco por encima.', 49.8),
+    msg('demo-ana', 'Hoy he subido a 65 kg en sentadilla y la rodilla perfecta', 0.05, false),
+  ];
+  return { profiles:[coach, ana, luis, marta], workout_plans:[plan], nutrition_plans:[nut], workout_logs: logs, body_metrics: mets, messages, progress_photos: [], documents: [] };
 }
 
 const api = DEMO ? DemoAPI() : SupabaseAPI();
@@ -227,9 +287,10 @@ const api = DEMO ? DemoAPI() : SupabaseAPI();
 /* ---------- Cola sin conexión (entrenos y medidas del cliente) ---------- */
 const OUTBOX = 'jpr-outbox';
 const outbox = { get(){ try { return JSON.parse(localStorage.getItem(OUTBOX)) || []; } catch(e){ return []; } }, set(v){ try { localStorage.setItem(OUTBOX, JSON.stringify(v)); } catch(e){} } };
+const SAVE = { log: r => api.saveLog(r), metric: r => api.saveMetric(r), msg: r => api.sendMessage(r) };
 const isNetErr = e => !navigator.onLine || /fetch|network|load failed|timeout/i.test(String(e && (e.message || e)));
 async function saveOrQueue(kind, row){
-  try { return await (kind === 'log' ? api.saveLog(row) : api.saveMetric(row)); }
+  try { return await SAVE[kind](row); }
   catch(e){
     if (!isNetErr(e)) throw e;
     const q = outbox.get().filter(x => x.row.id !== row.id); q.push({kind, row}); outbox.set(q);
@@ -239,7 +300,7 @@ async function saveOrQueue(kind, row){
 async function flushOutbox(){
   const q = outbox.get(); if (!q.length || !navigator.onLine) return;
   const rest = [];
-  for (const it of q){ try { await (it.kind === 'log' ? api.saveLog(it.row) : api.saveMetric(it.row)); } catch(e){ rest.push(it); } }
+  for (const it of q){ try { await SAVE[it.kind](it.row); } catch(e){ rest.push(it); } }
   outbox.set(rest);
   if (rest.length < q.length){ toast('Datos pendientes enviados'); if (['train','progress'].includes(S.view)) render(); }
 }
@@ -251,7 +312,7 @@ window.addEventListener('offline', offBanner);
 /* =====================================================================
    Estado y navegación
    ===================================================================== */
-const S = { me: null, view: 'loading', p: {}, stack: [], cache: {}, draft: null };
+const S = { me: null, view: 'loading', p: {}, stack: [], cache: {}, draft: null, unread: {}, unsub: null };
 function go(view, p = {}, push = true){
   if (push && S.view !== 'loading') { S.stack.push({view: S.view, p: S.p}); try { history.pushState({n: S.stack.length}, ''); } catch(e){} }
   S.view = view; S.p = p; S.draft = null; window.scrollTo(0, 0); render();
@@ -275,7 +336,9 @@ async function render(){
   if (seq !== renderSeq) return;
   $('#app').innerHTML = html;
   document.body.classList.toggle('no-tabs', !$('#app .tabs'));
+  const segOn = $('#app .seg button.on'); if (segOn && segOn.parentElement.scrollWidth > segOn.parentElement.clientWidth) segOn.parentElement.scrollLeft = segOn.offsetLeft - 40;
   V.mount && V.mount();
+  updateBadges();
 }
 
 /* ---------- Plantillas comunes ---------- */
@@ -287,12 +350,12 @@ function topbar(title, sub, {backBtn = false, right = ''} = {}){
   </header><div class="offline ${navigator.onLine ? 'hidden' : ''}" id="offl">Sin conexión. Lo que registres se enviará al volver la conexión.</div>`;
 }
 function clientTabs(active){
-  const t = [['train','Entreno','dumbbell'],['food','Alimentación','food'],['progress','Progreso','chart'],['profile','Perfil','user']];
-  return `<nav class="tabs">${t.map(([v,l,i]) => `<button class="${active === v ? 'on' : ''}" data-act="tab" data-v="${v}">${icon(i)}${l}</button>`).join('')}</nav>`;
+  const t = [['train','Entreno','dumbbell'],['food','Alimentación','food'],['progress','Progreso','chart'],['chat','Mensajes','chat'],['profile','Perfil','user']];
+  return `<nav class="tabs">${t.map(([v,l,i]) => `<button class="${active === v ? 'on' : ''}" data-act="tab" data-v="${v}">${icon(i)}${l}${v === 'chat' ? `<span class="tb-badge hidden" data-badge="${esc(S.me.id)}"></span>` : ''}</button>`).join('')}</nav>`;
 }
 function coachTabs(active){
   const t = [['clients','Clientes','users'],['coachProfile','Perfil','user']];
-  return `<nav class="tabs">${t.map(([v,l,i]) => `<button class="${active === v ? 'on' : ''}" data-act="tab" data-v="${v}">${icon(i)}${l}</button>`).join('')}</nav>`;
+  return `<nav class="tabs">${t.map(([v,l,i]) => `<button class="${active === v ? 'on' : ''}" data-act="tab" data-v="${v}">${icon(i)}${l}${v === 'clients' ? '<span class="tb-badge hidden" data-badge="all"></span>' : ''}</button>`).join('')}</nav>`;
 }
 const shell = (title, body, opts = {}) => topbar(title, opts.sub, opts) + `<main>${body}</main>` + (opts.tabs || '');
 const empty = (t, s, btn = '') => `<div class="card empty"><b>${esc(t)}</b>${esc(s)}${btn ? `<div style="margin-top:12px">${btn}</div>` : ''}</div>`;
@@ -426,6 +489,7 @@ VIEWS.clients = async () => {
       <div class="avatar">${esc(initials(c.full_name))}</div>
       <div class="grow"><b>${esc(c.full_name || c.email)}</b>
         <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}</div></div>
+      <span class="cnt hidden" data-badge="${esc(c.id)}" title="Mensajes sin leer"></span>
       ${c.status === 'pending' ? `<button class="btn sm gold" data-act="activate" data-id="${esc(c.id)}">Activar</button>` : statusBadge(c.status)}
       <span class="chev">›</span></div>`;
   };
@@ -461,17 +525,29 @@ async function loadClient(id){
   return {c, plans, nuts, logs, mets};
 }
 VIEWS.client = async () => {
-  const {c, plans, nuts, logs, mets} = await loadClient(S.p.id);
   const tab = S.p.tab || 'summary';
-  const tabs = [['summary','Resumen'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['info','Ficha']];
+  const {c, plans, nuts, logs, mets} = await loadClient(S.p.id);
+  const tabs = [['summary','Resumen'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['chat','Mensajes'],['info','Ficha']];
   let body = '';
   if (tab === 'summary') body = summaryHTML(c, plans, nuts, logs, mets);
-  if (tab === 'train') body = plansListHTML(c, plans, 'plan');
-  if (tab === 'food') body = plansListHTML(c, nuts, 'nut');
-  if (tab === 'progress') body = progressHTML(c, logs, mets, true);
+  if (tab === 'train' || tab === 'food'){
+    const docs = await api.docs(c.id).catch(() => []); const urls = await api.fileUrls(docs.map(d => d.path)).catch(() => ({}));
+    S.cache.docs = docs;
+    body = tab === 'train' ? plansListHTML(c, plans, 'plan') + docsHTML(docs, urls, 'entreno', true) : plansListHTML(c, nuts, 'nut') + docsHTML(docs, urls, 'alimentacion', true);
+  }
+  if (tab === 'progress'){
+    const photos = await api.photos(c.id).catch(() => []); const urls = await api.fileUrls(photos.map(p => p.path)).catch(() => ({}));
+    S.cache.photos = photos; S.cache.urls = urls;
+    body = progressHTML(c, logs, mets, true, photos, urls);
+  }
+  if (tab === 'chat'){
+    const msgs = await api.messages(c.id);
+    api.markRead(c.id, S.me.id).then(() => { S.unread[c.id] = 0; updateBadges(); }).catch(() => {});
+    body = chatHTML(msgs);
+  }
   if (tab === 'info') body = clientInfoHTML(c);
   return shell(c.full_name || c.email, `
-    <div class="seg" style="margin-bottom:12px">${tabs.map(([k,l]) => `<button class="${tab === k ? 'on' : ''}" data-act="ctab" data-v="${k}">${l}</button>`).join('')}</div>
+    <div class="seg" style="margin-bottom:12px">${tabs.map(([k,l]) => `<button class="${tab === k ? 'on' : ''}" data-act="ctab" data-v="${k}">${l}${k === 'chat' ? ` <span class="cnt hidden" data-badge="${esc(c.id)}"></span>` : ''}</button>`).join('')}</div>
     ${body}`, {backBtn: true, sub: c.status === 'pending' ? 'Pendiente de activar' : c.goal || 'Cliente'});
 };
 function summaryHTML(c, plans, nuts, logs, mets){
@@ -537,6 +613,7 @@ VIEWS.client.mount = () => {
     try { await api.updateProfile(S.p.id, fd, true); toast('Ficha guardada'); render(); } catch(err){ toast(err.message); }
   };
   mountProgress();
+  if (S.p.tab === 'chat') mountChat(S.p.id);
 };
 
 /* ---------- Editor de plan de entreno ---------- */
@@ -644,9 +721,11 @@ async function myData(){
   return {plan: plans.find(p => p.active), nut: nuts.find(n => n.active), logs: pl, mets: pm};
 }
 VIEWS.train = async () => {
-  const {plan, logs} = await myData();
+  const [{plan, logs}, docs] = await Promise.all([myData(), api.docs(S.me.id).catch(() => [])]);
+  const durls = await api.fileUrls(docs.map(d => d.path)).catch(() => ({}));
+  const docBlock = docsHTML(docs, durls, 'entreno', false);
   const hello = `<div style="margin-bottom:6px"><h1>Hola, ${esc(firstName(S.me.full_name))}</h1><p class="muted small" style="margin:2px 0 0">${logs[0] ? `Tu último entreno fue ${relDate(logs[0].date)}.` : '¡A por el primer entreno!'}</p></div>`;
-  if (!plan) return shell('Entreno', hello + empty('Todavía no tienes plan', `${firstName(CFG.COACH_NAME) || 'Tu coach'} te lo preparará pronto.`), {tabs: clientTabs('train'), sub: CFG.BRAND});
+  if (!plan) return shell('Entreno', hello + (docBlock || empty('Todavía no tienes plan', `${firstName(CFG.COACH_NAME) || 'Tu coach'} te lo preparará pronto.`)), {tabs: clientTabs('train'), sub: CFG.BRAND});
   const lastDay = logs.find(l => l.plan_id === plan.id)?.day_name;
   const nextIdx = lastDay ? (plan.days.findIndex(d => d.name === lastDay) + 1) % plan.days.length : 0;
   const n7 = logs.filter(l => daysAgo(l.date) < 7).length;
@@ -665,6 +744,7 @@ VIEWS.train = async () => {
         <div class="target">${d.exercises.slice(0, 4).map(x => `<span class="chip">${esc(x.name || 'Ejercicio')}</span>`).join('')}${d.exercises.length > 4 ? `<span class="chip">+${d.exercises.length - 4}</span>` : ''}</div>
         <button class="btn block ${i === nextIdx ? 'gold' : 'light'}" style="margin-top:10px">${icon('play', true)} Empezar</button>
       </div>`; }).join('')}</div>
+    ${docBlock}
     <div class="sec-title">Historial</div>${logsListHTML(logs.slice(0, 6))}
   `, {tabs: clientTabs('train'), sub: CFG.BRAND});
 };
@@ -714,8 +794,10 @@ VIEWS.session.mount = bindDraft;
 
 /* ---------- Alimentación (cliente) ---------- */
 VIEWS.food = async () => {
-  const {nut} = await myData();
-  return shell('Alimentación', nutritionViewHTML(nut), {tabs: clientTabs('food'), sub: CFG.BRAND});
+  const [{nut}, docs] = await Promise.all([myData(), api.docs(S.me.id).catch(() => [])]);
+  const durls = await api.fileUrls(docs.map(d => d.path)).catch(() => ({}));
+  const docBlock = docsHTML(docs, durls, 'alimentacion', false);
+  return shell('Alimentación', (nut || !docBlock ? nutritionViewHTML(nut) : '') + docBlock, {tabs: clientTabs('food'), sub: CFG.BRAND});
 };
 function nutritionViewHTML(nut){
   if (!nut) return empty('Todavía no tienes plan de alimentación', `${firstName(CFG.COACH_NAME) || 'Tu coach'} te lo preparará pronto.`);
@@ -736,11 +818,13 @@ function nutritionViewHTML(nut){
 
 /* ---------- Progreso (cliente y coach) ---------- */
 VIEWS.progress = async () => {
-  const {logs, mets} = await myData();
-  return shell('Progreso', progressHTML(S.me, logs, mets, false), {tabs: clientTabs('progress'), sub: CFG.BRAND});
+  const [{logs, mets}, photos] = await Promise.all([myData(), api.photos(S.me.id).catch(() => [])]);
+  const urls = await api.fileUrls(photos.map(p => p.path)).catch(() => ({}));
+  S.cache.photos = photos; S.cache.urls = urls;
+  return shell('Progreso', progressHTML(S.me, logs, mets, false, photos, urls), {tabs: clientTabs('progress'), sub: CFG.BRAND});
 };
 VIEWS.progress.mount = () => mountProgress();
-function progressHTML(c, logs, mets, asCoach){
+function progressHTML(c, logs, mets, asCoach, photos = [], urls = {}){
   const ws = mets.filter(m => m.weight_kg != null);
   const exNames = [...new Set(logs.flatMap(l => (l.entries || []).map(e => e.exercise)).filter(Boolean))];
   const ex = S.p.ex && exNames.includes(S.p.ex) ? S.p.ex : exNames[0];
@@ -760,6 +844,7 @@ function progressHTML(c, logs, mets, asCoach){
       ${mets.slice().reverse().slice(0, 12).map(m => `<tr><td>${fmtDate(m.date)}${m._pending ? ' <span class="badge warn">pendiente</span>' : ''}</td><td>${fmtNum(m.weight_kg)}</td><td>${fmtNum(m.waist_cm)}</td><td>${fmtNum(m.hip_cm)}</td><td>${fmtNum(m.body_fat)}</td><td>${[m.sleep, m.stress, m.energy].map(v => v ?? '-').join('/')}</td>
       <td>${m._pending ? '' : `<button class="mini bad" data-act="delMetric" data-id="${esc(m.id)}" aria-label="Borrar">${icon('trash')}</button>`}</td></tr>`).join('')}</tbody></table></div>
       <p class="tiny muted">S/E/E: sueño, estrés y energía del 1 al 5.</p>` : ''}
+    ${photosHTML(photos, urls)}
     <div class="sec-title">Fuerza</div>
     <div class="card">
       ${exNames.length ? `<select class="in" id="exSel" style="margin-bottom:8px">${exNames.map(n => `<option ${n === ex ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
@@ -830,6 +915,164 @@ VIEWS.profile.mount = () => {
 };
 
 /* =====================================================================
+   Mensajes
+   ===================================================================== */
+const localDay = iso => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleDateString('sv-SE'); };
+const hhmm = iso => new Date(iso).toLocaleTimeString('es-ES', {hour:'2-digit', minute:'2-digit'});
+const daySep = d => `<div class="daysep">${d === today() ? 'Hoy' : esc(fmtDate(d, {weekday:'long', day:'numeric', month:'long'}))}</div>`;
+function bubble(m){
+  const mine = m.sender_id === S.me.id;
+  return `<div class="bub ${mine ? 'me' : ''} ${m._pending ? 'pend' : ''}" data-mid="${esc(m.id)}"><div class="bt">${esc(m.body)}</div>
+    <div class="bm">${m._pending ? 'Pendiente de enviar' : hhmm(m.created_at)}${mine && !m._pending ? (m.read_at ? ' <b class="rd">✓✓</b>' : ' ✓') : ''}</div></div>`;
+}
+function chatHTML(msgs){
+  let last = '';
+  const inner = msgs.map(m => { const d = m.created_at ? localDay(m.created_at) : ''; const sep = d && d !== last ? daySep(d) : ''; if (d) last = d; return sep + bubble(m); }).join('');
+  const who = S.me.role === 'coach' ? 'tu cliente' : (firstName(CFG.COACH_NAME) || 'tu coach');
+  return `<div class="chat" id="chat" data-last="${last}">${inner || `<div class="empty" id="chatEmpty"><b>Sin mensajes todavía</b>Escribe a ${esc(who)} cuando quieras.</div>`}</div>
+    <form class="composer" id="fChat"><textarea class="in" rows="1" placeholder="Escribe un mensaje" maxlength="4000"></textarea>
+    <button class="btn gold" type="submit" aria-label="Enviar">${icon('send')}</button></form>`;
+}
+function appendMsg(m){
+  const chat = $('#chat'); if (!chat) return;
+  const ex = [...chat.querySelectorAll('[data-mid]')].find(x => x.dataset.mid === m.id);
+  if (ex){ ex.outerHTML = bubble(m); return; }
+  $('#chatEmpty')?.remove();
+  const d = m.created_at ? localDay(m.created_at) : '';
+  if (d && d !== chat.dataset.last){ chat.insertAdjacentHTML('beforeend', daySep(d)); chat.dataset.last = d; }
+  chat.insertAdjacentHTML('beforeend', bubble(m));
+  window.scrollTo(0, document.body.scrollHeight);
+}
+function mountChat(cid){
+  const f = $('#fChat'); if (!f) return;
+  const ta = f.querySelector('textarea');
+  window.scrollTo(0, document.body.scrollHeight);
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; };
+  ta.addEventListener('input', grow);
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const body = ta.value.trim(); if (!body) return;
+    const row = {id: uid(), client_id: cid, sender_id: S.me.id, body};
+    ta.value = ''; grow();
+    appendMsg({...row, created_at: new Date().toISOString(), _pending: true});
+    try { const r = await saveOrQueue('msg', row); if (!r._pending) appendMsg({...row, ...r}); else toast('Sin conexión. Se enviará al volver la conexión.'); }
+    catch(err){ toast(err.message); }
+  };
+}
+VIEWS.chat = async () => {
+  const id = S.me.id;
+  const msgs = await api.messages(id).catch(() => []);
+  const pend = pendingFor('msg', id);
+  api.markRead(id, id).then(() => { S.unread[id] = 0; updateBadges(); }).catch(() => {});
+  return shell('Mensajes', chatHTML([...msgs.filter(m => !pend.some(p => p.id === m.id)), ...pend]), {tabs: clientTabs('chat'), sub: 'Con ' + (CFG.COACH_NAME || 'tu coach')});
+};
+VIEWS.chat.mount = () => mountChat(S.me.id);
+
+async function refreshUnread(){ if (!S.me) return; try { S.unread = await api.unread(S.me.id); } catch(e){} updateBadges(); }
+function updateBadges(){
+  document.querySelectorAll('[data-badge]').forEach(el => {
+    const k = el.dataset.badge;
+    const n = k === 'all' ? Object.values(S.unread || {}).reduce((a, b) => a + b, 0) : ((S.unread || {})[k] || 0);
+    el.textContent = n > 99 ? '99+' : n; el.classList.toggle('hidden', !n);
+  });
+}
+function onNewMessage(m){
+  if (!S.me || m.sender_id === S.me.id) return;
+  const open = S.me.role === 'coach' ? (S.view === 'client' && S.p.tab === 'chat' && S.p.id === m.client_id) : S.view === 'chat';
+  if (open){ appendMsg(m); api.markRead(m.client_id, S.me.id).catch(() => {}); return; }
+  S.unread[m.client_id] = (S.unread[m.client_id] || 0) + 1; updateBadges();
+  toast(S.me.role === 'coach' ? 'Nuevo mensaje de un cliente' : `Nuevo mensaje de ${firstName(CFG.COACH_NAME) || 'tu coach'}`);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !S.me) return;
+  refreshUnread();
+  if (S.view === 'chat' || (S.view === 'client' && S.p.tab === 'chat')) render();
+});
+
+/* =====================================================================
+   Fotos de progreso y documentos
+   ===================================================================== */
+const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+const curCid = () => S.me.role === 'coach' ? S.p.id : S.me.id;
+const fmtSize = b => !b ? '' : b >= 1e6 ? `${fmtNum(b / 1e6, 1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`;
+async function compressImage(file, max = 1280, q = .8){
+  let src;
+  try { src = await createImageBitmap(file, {imageOrientation: 'from-image'}); }
+  catch(e){ src = await new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = () => rej(new Error('No se ha podido leer la foto. Prueba con otra.')); img.src = URL.createObjectURL(file); }); }
+  const k = Math.min(1, max / Math.max(src.width, src.height));
+  const c = document.createElement('canvas'); c.width = Math.round(src.width * k); c.height = Math.round(src.height * k);
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', q));
+  if (!blob) throw new Error('No se ha podido preparar la foto');
+  return blob;
+}
+function photosHTML(photos, urls){
+  const btn = `<button class="btn light block" data-act="photoNew">${icon('camera')} Subir fotos</button>`;
+  if (!photos.length) return `<div class="sec-title">Fotos de progreso</div>${empty('Sin fotos todavía', 'Fotos de frente, espalda y perfil cada 2 a 4 semanas, con la misma luz y la misma ropa.', btn)}`;
+  const dates = [...new Set(photos.map(p => p.date))].sort();
+  const poses = ['frente','espalda','perfil','otra'].filter(p => new Set(photos.filter(x => x.pose === p).map(x => x.date)).size >= 2);
+  const pose = poses.includes(S.p.cmpPose) ? S.p.cmpPose : poses[0];
+  const pd = dates.filter(d => photos.some(x => x.pose === pose && x.date === d));
+  const A = pd.includes(S.p.cmpA) ? S.p.cmpA : pd[0], B = pd.includes(S.p.cmpB) ? S.p.cmpB : pd[pd.length - 1];
+  const long = d => fmtDate(d, {day:'numeric', month:'short', year:'numeric'});
+  const fig = d => { const p = photos.find(x => x.pose === pose && x.date === d); return `<figure>${p && urls[p.path] ? `<img src="${esc(urls[p.path])}" alt="">` : '<div class="noimg"></div>'}<figcaption>${esc(long(d))}</figcaption></figure>`; };
+  const sel = (k, v) => `<select class="in" data-cmp="${k}">${pd.map(d => `<option value="${d}" ${d === v ? 'selected' : ''}>${esc(long(d))}</option>`).join('')}</select>`;
+  return `<div class="sec-title">Fotos de progreso</div>
+    ${poses.length ? `<div class="card stack"><b>Antes y después</b>
+      <div class="seg">${poses.map(p => `<button class="${p === pose ? 'on' : ''}" data-act="cmpPose" data-v="${p}">${cap(p)}</button>`).join('')}</div>
+      <div class="grid2">${sel('cmpA', A)}${sel('cmpB', B)}</div><div class="cmp">${fig(A)}${fig(B)}</div></div>` : ''}
+    ${dates.slice().reverse().map(d => `<div class="pdate">${esc(fmtDate(d, {weekday:'short', day:'numeric', month:'short', year:'numeric'}))}</div>
+      <div class="pgrid">${photos.filter(p => p.date === d).map(p => `<button class="ph" data-act="photoView" data-id="${esc(p.id)}">${urls[p.path] ? `<img src="${esc(urls[p.path])}" loading="lazy" alt="">` : ''}<span>${esc(p.pose)}</span></button>`).join('')}</div>`).join('')}
+    <div style="margin-top:10px">${btn}</div>`;
+}
+function photoModal(cid){
+  const POS = ['frente','espalda','perfil'], chosen = {};
+  modal(`<h2>Fotos de progreso</h2><p class="small muted">Misma luz, misma ropa y a la misma hora. Mejor por la mañana y en ayunas.</p>
+    <label class="f" style="margin:10px 0">Fecha<input class="in" type="date" id="phDate" value="${today()}"></label>
+    <div class="grid3">${POS.map(p => `<label class="upl"><input type="file" accept="image/*" data-pose="${p}" hidden><span class="upl-box" data-prev="${p}">${icon('camera')}<b>${cap(p)}</b><small>Toca aquí</small></span></label>`).join('')}</div>
+    <div class="grid2" style="margin-top:14px"><button class="btn light" data-x="no">Cancelar</button><button class="btn gold" data-x="ok">Guardar</button></div>`, (m, close) => {
+    m.querySelectorAll('input[type=file]').forEach(inp => inp.onchange = () => {
+      const f = inp.files[0]; if (!f) return; chosen[inp.dataset.pose] = f;
+      const box = m.querySelector(`[data-prev="${inp.dataset.pose}"]`); box.style.backgroundImage = `url("${URL.createObjectURL(f)}")`; box.classList.add('has');
+    });
+    m.querySelector('[data-x=no]').onclick = close;
+    const ok = m.querySelector('[data-x=ok]');
+    ok.onclick = async () => {
+      const list = Object.entries(chosen); if (!list.length) return toast('Elige al menos una foto');
+      ok.disabled = true; const date = m.querySelector('#phDate').value || today();
+      try {
+        let i = 0;
+        for (const [pose, f] of list){ ok.textContent = `Subiendo ${++i} de ${list.length}`; const blob = await compressImage(f); await api.uploadPhoto({id: uid(), client_id: cid, date, pose}, blob); }
+        close(); toast('Fotos guardadas'); render();
+      } catch(e){ ok.disabled = false; ok.textContent = 'Guardar'; toast(isNetErr(e) ? 'Sin conexión. Las fotos necesitan internet.' : (e.message || 'Error al subir')); }
+    };
+  });
+}
+function docsHTML(docs, urls, kind, asCoach){
+  const list = docs.filter(d => d.kind === kind);
+  if (!asCoach && !list.length) return '';
+  return `<div class="sec-title">${kind === 'entreno' ? 'Documentos de entreno' : 'Documentos de alimentación'}</div>
+    <div class="list">${list.map(d => `<div class="card item"><span class="mini">${icon('file')}</span>
+      <div class="grow"><b>${esc(d.name)}</b><div class="small muted">PDF${d.size_bytes ? `, ${fmtSize(d.size_bytes)}` : ''}, ${relDate((d.created_at || '').slice(0,10))}</div></div>
+      ${urls[d.path] ? `<a class="btn sm light" href="${esc(urls[d.path])}" target="_blank" rel="noopener">Abrir</a>` : ''}
+      ${asCoach ? `<button class="mini bad" data-act="docDel" data-id="${esc(d.id)}" aria-label="Borrar">${icon('trash')}</button>` : ''}</div>`).join('')
+      || '<p class="small muted" style="margin:0 2px">Todavía no has subido ningún PDF. Tu cliente lo verá aquí y en su app.</p>'}</div>
+    ${asCoach ? `<label class="btn light block" style="margin-top:8px">${icon('upload')} Subir PDF<input type="file" accept="application/pdf,.pdf" hidden data-docup="${kind}"></label>` : ''}`;
+}
+document.addEventListener('change', async e => {
+  const t = e.target;
+  if (t.matches && t.matches('[data-cmp]')){ S.p[t.dataset.cmp] = t.value; render(); }
+  if (t.matches && t.matches('[data-docup]')){
+    const f = t.files[0]; t.value = ''; if (!f) return;
+    if (!/pdf$/i.test(f.type) && !/\.pdf$/i.test(f.name)) return toast('Solo se pueden subir archivos PDF');
+    if (f.size > 15 * 1024 * 1024) return toast('El PDF pesa más de 15 MB');
+    toast('Subiendo PDF', 15000);
+    try { await api.uploadDoc({id: uid(), client_id: S.p.id, name: f.name.replace(/\.pdf$/i, ''), kind: t.dataset.docup}, f); toast('PDF subido. Tu cliente ya lo puede ver.'); render(); }
+    catch(err){ toast(isNetErr(err) ? 'Sin conexión. Inténtalo de nuevo.' : err.message); }
+  }
+});
+
+/* =====================================================================
    Acciones (delegación de eventos)
    ===================================================================== */
 const reorder = (arr, i, dir) => { const j = i + dir; if (j < 0 || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; };
@@ -838,7 +1081,7 @@ const ACT = {
   nav: el => go(el.dataset.v, {}, false),
   tab: el => { S.stack = []; go(el.dataset.v, {}, false); },
   async demoLogin(el){ await api.signIn(el.dataset.id); await boot(); },
-  async logout(){ if (!(await confirmBox('Cerrar sesión', '¿Seguro que quieres salir?', 'Salir'))) return; await api.signOut(); S.me = null; S.stack = []; go('login', {}, false); },
+  async logout(){ if (!(await confirmBox('Cerrar sesión', '¿Seguro que quieres salir?', 'Salir'))) return; S.unsub && S.unsub(); S.unsub = null; S.unread = {}; await api.signOut(); S.me = null; S.stack = []; go('login', {}, false); },
   async resetDemo(){ if (!(await confirmBox('Reiniciar demo', 'Se borrarán los cambios y vuelven los datos de ejemplo.', 'Reiniciar', true))) return; api.reset(); toast('Demo reiniciada'); render(); },
   privacy: () => modal(PRIVACY_HTML + '<button class="btn block" data-x="ok" style="margin-top:12px">Cerrar</button>', (m, close) => m.querySelector('[data-x=ok]').onclick = close),
   copyLink: async () => { try { await navigator.clipboard.writeText(location.origin + location.pathname); toast('Enlace copiado'); } catch(e){ toast('Mantén pulsado el enlace para copiarlo'); } },
@@ -928,6 +1171,24 @@ const ACT = {
   },
   pmetric: el => { S.p.metric = el.dataset.v; render(); },
   async delLog(el){ if (!(await confirmBox('Borrar entreno', 'Se borrará este entreno del historial.', 'Borrar', true))) return; await api.deleteLog(el.dataset.id); toast('Entreno borrado'); render(); },
+  cmpPose: el => { S.p.cmpPose = el.dataset.v; S.p.cmpA = S.p.cmpB = null; render(); },
+  photoNew: () => photoModal(curCid()),
+  photoView: el => {
+    const p = (S.cache.photos || []).find(x => x.id === el.dataset.id); if (!p) return;
+    const u = (S.cache.urls || {})[p.path];
+    modal(`${u ? `<img src="${esc(u)}" style="width:100%;border-radius:12px;display:block" alt="">` : ''}
+      <div class="row between" style="margin-top:10px"><div><b>${esc(cap(p.pose))}</b><div class="small muted">${esc(fmtDate(p.date, {day:'numeric', month:'long', year:'numeric'}))}</div></div>
+      <button class="btn sm danger" data-x="del">${icon('trash')} Borrar</button></div>
+      <button class="btn light block" data-x="ok" style="margin-top:12px">Cerrar</button>`, (m, close) => {
+      m.querySelector('[data-x=ok]').onclick = close;
+      m.querySelector('[data-x=del]').onclick = async () => { close(); if (!(await confirmBox('Borrar foto', 'Se borrará para siempre.', 'Borrar', true))) return; await api.deletePhoto(p); toast('Foto borrada'); render(); };
+    });
+  },
+  async docDel(el){
+    const d = (S.cache.docs || []).find(x => x.id === el.dataset.id); if (!d) return;
+    if (!(await confirmBox('Borrar PDF', `Se borrará "${d.name}" y tu cliente dejará de verlo.`, 'Borrar', true))) return;
+    await api.deleteDoc(d); toast('PDF borrado'); render();
+  },
   async delMetric(el){ if (!(await confirmBox('Borrar medidas', 'Se borrará este registro.', 'Borrar', true))) return; await api.deleteMetric(el.dataset.id); toast('Registro borrado'); render(); },
 };
 document.addEventListener('click', async e => {
@@ -962,6 +1223,9 @@ async function boot(){
     if (S.recovery || /type=recovery/.test(location.hash)) { S.recovery = true; return go('resetPw', {}, false); }
     if (S.me.role !== 'coach' && S.me.status !== 'active') return go('pending', {}, false);
     flushOutbox();
+    S.unread = S.unread || {};
+    if (!S.unsub){ try { S.unsub = api.subscribe(onNewMessage); } catch(e){ console.warn(e); } }
+    refreshUnread();
     home();
   } catch(e){
     console.error(e);
