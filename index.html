@@ -250,6 +250,79 @@ body.no-tabs .composer{bottom:calc(var(--safe-b) + 6px)}
 .upl-box.has{border-style:solid;border-color:var(--gold)}
 .upl-box.has > *{visibility:hidden}
 label.btn{cursor:pointer}
+
+/* =================== Mejora de contraste y jerarquía (v3) =================== */
+:root{ --bg:#f2ede4; --line:#ddd2c1; --muted:#5d574e; --gold-soft:#f0e3c8; --alt:#f6f1e8; }
+html,body{font-size:16px}
+.small{font-size:14px} .tiny{font-size:13px}
+.card{border-color:var(--line);box-shadow:0 1px 2px rgba(32,42,52,.06),0 4px 14px rgba(32,42,52,.05)}
+.card.cream{background:#f8eedc;border-color:#e6d2ad}
+.sec-title{font-size:17px;color:var(--navy);margin:22px 2px 10px;padding-bottom:6px;border-bottom:2px solid #e4d8c4}
+.sec-title::before{font-size:13px}
+
+/* Pestañas superiores: la activa en azul marino */
+.seg{background:#e6dfd2;padding:4px}
+.seg button{color:#4f4a42;font-size:14px}
+.seg button.on{background:var(--navy);color:#fff;box-shadow:0 2px 6px rgba(32,42,52,.25)}
+.seg button.on .cnt{background:#fff;color:var(--bad)}
+
+/* Barra inferior: la sección activa con fondo y raya dorada */
+.tabs{border-top:1px solid var(--line)}
+.tabs button{color:#7d766b;border-radius:12px;margin:0 2px;font-size:11.5px}
+.tabs button.on{color:var(--navy);background:var(--cream);font-weight:700}
+.tabs button.on::before{content:"";position:absolute;top:-6px;left:28%;right:28%;height:3px;border-radius:0 0 3px 3px;background:var(--gold)}
+
+/* Datos clave */
+.stat{border-color:var(--line);border-top:3px solid var(--navy);box-shadow:0 1px 2px rgba(32,42,52,.05)}
+.stat small{color:#5d574e;font-size:11.5px;font-weight:600}
+.stat b{font-size:22px;color:var(--navy)}
+
+/* Botones y campos */
+.btn.light{border:1.5px solid #cfc2ad;color:var(--navy)}
+.in,select.in,textarea.in{border:1.5px solid #d9cebd}
+.mini{background:#ece5d9}
+.chip{background:#e9e2d5;color:#2b3642;font-size:13px}
+.chip.gold{background:var(--gold-soft);color:#7a5c22}
+label.f{color:#4f4a42}
+
+/* Estados con color: te toca, retrasado, pendiente */
+.card.next{border:2px solid var(--gold);box-shadow:0 4px 18px rgba(156,122,60,.18)}
+.card.late{border-left:5px solid var(--bad)}
+.card.pend{border-left:5px solid var(--gold)}
+.card.ok-l{border-left:5px solid var(--ok)}
+.late-tag{display:inline-block;background:var(--bad-soft);color:var(--bad);font-size:11px;font-weight:700;padding:2px 7px;border-radius:99px;margin-left:4px;vertical-align:1px}
+.badge{font-size:11.5px;padding:4px 9px}
+
+/* Ejercicios y comidas más separados */
+.exs-head{background:#faf6ef;border-bottom:1px solid var(--line)}
+.exs-head b{color:var(--navy);font-size:18px}
+.set-head{color:#5d574e;font-weight:600}
+.opt{border-bottom-color:#e9e0d1}
+.opt:nth-child(even){background:#fbf8f2}
+.macro{border-top:3px solid var(--gold)}
+.macro b{color:var(--navy)}
+.tbl th{font-size:11.5px}
+.daysep{background:#e6dfd2;color:#4f4a42;font-weight:600}
+.empty b{color:var(--navy)}
+
+/* Cabeceras oscuras para separar bloques; valores apuntados en negrita */
+.dcard{padding:0;overflow:hidden}
+.dhead{background:var(--navy);color:#fff;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.dhead h3{color:#fff;margin:0}
+.dcard.next .dhead{background:var(--gold)}
+.badge.tt{background:#fff;color:var(--gold)}
+.dbody{padding:12px 14px 14px}
+.exs{box-shadow:0 1px 2px rgba(32,42,52,.06),0 4px 14px rgba(32,42,52,.05)}
+.exs-head{background:var(--navy);color:#fff;border-bottom:0}
+.exs-head b{color:#fff}
+.exs-head .muted{color:#d5cfc4!important}
+.exs-head .chip{background:rgba(255,255,255,.14);color:#fff}
+.exs-head .chip.gold{background:var(--gold);color:#fff}
+.set .in{font-weight:700;color:var(--navy);font-size:17px}
+.set .in::placeholder{color:#bdb4a6;font-weight:400;font-style:italic}
+.set.done .in{border-color:#9cc7a9;background:#fff}
+.mini.ic-train{background:var(--navy);color:#fff}
+.mini.ic-food{background:var(--gold);color:#fff}
 </style>
 </head>
 <body>

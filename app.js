@@ -485,10 +485,10 @@ VIEWS.clients = async () => {
   const trained7 = clients.filter(c => lastLog[c.id] && daysAgo(lastLog[c.id]) <= 7).length;
   const row = c => {
     const d = lastLog[c.id], late = c.status === 'active' && (d == null || daysAgo(d) > 7);
-    return `<div class="card tap item" data-act="openClient" data-id="${esc(c.id)}">
+    return `<div class="card tap item ${c.status === 'pending' ? 'pend' : late ? 'late' : ''}" data-act="openClient" data-id="${esc(c.id)}">
       <div class="avatar">${esc(initials(c.full_name))}</div>
       <div class="grow"><b>${esc(c.full_name || c.email)}</b>
-        <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}</div></div>
+        <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}</div></div>
       <span class="cnt hidden" data-badge="${esc(c.id)}" title="Mensajes sin leer"></span>
       ${c.status === 'pending' ? `<button class="btn sm gold" data-act="activate" data-id="${esc(c.id)}">Activar</button>` : statusBadge(c.status)}
       <span class="chev">›</span></div>`;
@@ -567,8 +567,8 @@ function summaryHTML(c, plans, nuts, logs, mets){
     <div class="card">${lineChart(ws.map(m => ({x: m.date, y: num(m.weight_kg)})))}</div>
     <div class="sec-title">Planes activos</div>
     <div class="list">
-      <div class="card tap item" data-act="ctab" data-v="train"><span class="mini">${icon('dumbbell')}</span><div class="grow"><b>${activePlan ? esc(activePlan.name) : 'Sin plan de entreno'}</b><div class="small muted">${activePlan ? `${activePlan.days.length} días, actualizado ${relDate((activePlan.updated_at || activePlan.created_at || '').slice(0,10))}` : 'Toca para crear uno'}</div></div><span class="chev">›</span></div>
-      <div class="card tap item" data-act="ctab" data-v="food"><span class="mini">${icon('food')}</span><div class="grow"><b>${activeNut ? esc(activeNut.name) : 'Sin plan de alimentación'}</b><div class="small muted">${activeNut ? `${activeNut.kcal || '-'} kcal, ${activeNut.meals.length} comidas` : 'Toca para crear uno'}</div></div><span class="chev">›</span></div>
+      <div class="card tap item" data-act="ctab" data-v="train"><span class="mini ic-train">${icon('dumbbell')}</span><div class="grow"><b>${activePlan ? esc(activePlan.name) : 'Sin plan de entreno'}</b><div class="small muted">${activePlan ? `${activePlan.days.length} días, actualizado ${relDate((activePlan.updated_at || activePlan.created_at || '').slice(0,10))}` : 'Toca para crear uno'}</div></div><span class="chev">›</span></div>
+      <div class="card tap item" data-act="ctab" data-v="food"><span class="mini ic-food">${icon('food')}</span><div class="grow"><b>${activeNut ? esc(activeNut.name) : 'Sin plan de alimentación'}</b><div class="small muted">${activeNut ? `${activeNut.kcal || '-'} kcal, ${activeNut.meals.length} comidas` : 'Toca para crear uno'}</div></div><span class="chev">›</span></div>
     </div>
     <div class="sec-title">Últimos entrenos</div>
     ${logsListHTML(logs.slice(0, 5))}
@@ -738,12 +738,12 @@ VIEWS.train = async () => {
     ${plan.notes ? `<div class="card cream small prose" style="margin-bottom:10px">${esc(plan.notes)}</div>` : ''}
     <div class="list">${plan.days.map((d, i) => {
       const last = logs.find(l => l.plan_id === plan.id && l.day_name === d.name);
-      return `<div class="card tap" data-act="startDay" data-d="${i}">
-        <div class="row between"><h3>${esc(d.name)}</h3>${i === nextIdx ? '<span class="badge gold">Te toca</span>' : ''}</div>
+      return `<div class="card tap dcard ${i === nextIdx ? 'next' : ''}" data-act="startDay" data-d="${i}">
+        <div class="dhead"><h3>${esc(d.name)}</h3>${i === nextIdx ? '<span class="badge tt">Te toca</span>' : ''}</div><div class="dbody">
         <div class="small muted">${d.exercises.length} ejercicios. ${last ? `Último: ${relDate(last.date)}` : 'Sin hacer todavía'}</div>
         <div class="target">${d.exercises.slice(0, 4).map(x => `<span class="chip">${esc(x.name || 'Ejercicio')}</span>`).join('')}${d.exercises.length > 4 ? `<span class="chip">+${d.exercises.length - 4}</span>` : ''}</div>
         <button class="btn block ${i === nextIdx ? 'gold' : 'light'}" style="margin-top:10px">${icon('play', true)} Empezar</button>
-      </div>`; }).join('')}</div>
+      </div></div>`; }).join('')}</div>
     ${docBlock}
     <div class="sec-title">Historial</div>${logsListHTML(logs.slice(0, 6))}
   `, {tabs: clientTabs('train'), sub: CFG.BRAND});
