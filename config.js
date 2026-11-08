@@ -7,4 +7,6 @@ window.JPR_CONFIG = {
   SUPABASE_ANON_KEY: 'sb_publishable_KM2PankEj8jbXzgIan3yHA_KYi97AnG',
   COACH_NAME: 'Julián Prieto',
   BRAND: 'JPR Coach',
+  // 'test' mientras pruebas con tarjetas de prueba; 'live' cuando cobres de verdad
+  STRIPE_MODE: 'test',
 };

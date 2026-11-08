@@ -72,6 +72,8 @@ const I = {
   file:'<path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/>',
   send:'<path d="M4 12 20 4l-6 16-3-7z"/>',
   upload:'<path d="M12 16V4M7 9l5-5 5 5M5 20h14"/>',
+  card:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/>',
+  ext:'<path d="M14 4h6v6M20 4l-9 9M18 14v6H4V6h6"/>',
 };
 const icon = (n, fill) => `<svg viewBox="0 0 24 24" fill="${fill ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${I[n]}</svg>`;
 
@@ -88,6 +90,8 @@ const TABLES = {
   messages: ['id','client_id','sender_id','body'],
   progress_photos: ['id','client_id','date','pose','path','notes'],
   documents: ['id','client_id','name','kind','path','size_bytes'],
+  billing: ['client_id','plan_name','amount_cents','currency','period','manual_until'],
+  payments: ['id','client_id','amount_cents','currency','status','description','paid_at'],
 };
 const PROFILE_FIELDS_CLIENT = ['full_name','phone','birth_date','height_cm','goal'];
 const PROFILE_FIELDS_COACH = [...PROFILE_FIELDS_CLIENT, 'status', 'notes'];
@@ -154,7 +158,20 @@ function SupabaseAPI(){
     docs: cid => list('documents', cid),
     async uploadDoc(row, file){ const safe = (file.name || 'documento.pdf').normalize('NFD').replace(/[^\w.-]+/g, '_'); const path = `${row.client_id}/docs/${row.id}-${safe}`; ok(await sb.storage.from('jpr').upload(path, file, {contentType:'application/pdf', upsert:true})); return upsert('documents', {...row, path, size_bytes: file.size}); },
     async deleteDoc(row){ await sb.storage.from('jpr').remove([row.path]); return del('documents', row.id); },
+    // Pagos
+    billing: cid => sb.from('billing').select('*').eq('client_id', cid).maybeSingle().then(ok),
+    allBilling: () => sb.from('billing').select('*').then(ok),
+    saveBilling: row => sb.from('billing').upsert(pick(row, TABLES.billing)).select().single().then(ok),
+    payments: cid => sb.from('payments').select('*').eq('client_id', cid).order('paid_at', {ascending:false}).limit(100).then(ok),
+    addManualPayment: row => sb.from('payments').insert({...pick(row, TABLES.payments), method: 'manual'}).select().single().then(ok),
+    deletePayment: id => del('payments', id),
+    async checkout(){ const {data, error} = await sb.functions.invoke('create-checkout', {body: {}}); if (error) throw await fnError(error); return data; },
+    async portal(){ const {data, error} = await sb.functions.invoke('customer-portal', {body: {}}); if (error) throw await fnError(error); return data; },
   };
+}
+async function fnError(error){
+  try { const j = await error.context.json(); return new Error(j.error || error.message); }
+  catch(e){ return new Error(/fetch|network/i.test(error.message) ? 'Sin conexión. Inténtalo de nuevo.' : 'El sistema de pagos todavía no está activado. Avisa a tu coach.'); }
 }
 
 function DemoAPI(){
@@ -162,7 +179,7 @@ function DemoAPI(){
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || seed(); } catch(e){ return mem || (mem = seed()); } };
   let mem = null;
   let db = load();
-  ['messages','progress_photos','documents'].forEach(k => { if (!db[k]) db[k] = []; });
+  ['messages','progress_photos','documents','billing','payments'].forEach(k => { if (!db[k]) db[k] = []; });
   let listeners = [];
   const files = {};
   const putFile = async (path, blob) => {
@@ -228,6 +245,26 @@ function DemoAPI(){
     docs: cid => wait(byClient('documents', cid).sort((a,b) => b.created_at.localeCompare(a.created_at))),
     async uploadDoc(row, file){ const path = `${row.client_id}/docs/${row.id}.pdf`; await putFile(path, file); return upsert('documents', {...row, path, size_bytes: file.size}); },
     async deleteDoc(row){ delFile(row.path); return del('documents', row.id); },
+    billing: cid => wait(db.billing.find(b => b.client_id === cid) || null),
+    allBilling: () => wait(db.billing),
+    async saveBilling(row){
+      const r = pick(row, TABLES.billing); let b = db.billing.find(x => x.client_id === r.client_id);
+      if (!b){ b = {client_id: r.client_id, status: 'none', currency: 'eur'}; db.billing.push(b); }
+      Object.assign(b, r, {updated_at: now()}); save(); return wait(b);
+    },
+    payments: cid => wait(db.payments.filter(x => x.client_id === cid).sort((a,b) => b.paid_at.localeCompare(a.paid_at))),
+    async addManualPayment(row){ const r = {...pick(row, TABLES.payments), id: uid(), method: 'manual', status: 'paid', created_at: now()}; r.paid_at = r.paid_at || now(); db.payments.push(r); save(); return wait(r); },
+    deletePayment: id => del('payments', id),
+    async checkout(){
+      const b = db.billing.find(x => x.client_id === sess);
+      if (!b || !b.amount_cents) throw new Error('Tu coach todavía no ha configurado tu plan de pago.');
+      const months = {month:1, quarter:3, semester:6, year:12}[b.period];
+      const end = new Date(); if (months) end.setMonth(end.getMonth() + months);
+      Object.assign(b, {status: months ? 'active' : 'paid_once', current_period_end: months ? end.toISOString() : null, stripe_customer_id: 'cus_demo', last_payment_at: now()});
+      db.payments.push({id: uid(), client_id: sess, amount_cents: b.amount_cents, currency: 'eur', status: 'paid', method: 'stripe', description: 'Primer pago con tarjeta', paid_at: now(), created_at: now()});
+      save(); return {demo: true};
+    },
+    async portal(){ return {demo: true}; },
   };
 }
 
@@ -279,7 +316,15 @@ function seed(){
     msg('demo-coach', 'Sí, hasta paralelo y sin rebotar. Si notas la rodilla, te quedas un poco por encima.', 49.8),
     msg('demo-ana', 'Hoy he subido a 65 kg en sentadilla y la rodilla perfecta', 0.05, false),
   ];
-  return { profiles:[coach, ana, luis, marta], workout_plans:[plan], nutrition_plans:[nut], workout_logs: logs, body_metrics: mets, messages, progress_photos: [], documents: [] };
+  const nextMonth = new Date(); nextMonth.setDate(nextMonth.getDate() + 22);
+  const billing = [
+    {client_id:'demo-ana', plan_name:'Entreno + alimentación', amount_cents:7000, currency:'eur', period:'month', status:'active', current_period_end: nextMonth.toISOString(), stripe_customer_id:'cus_demo_ana', last_payment_at: ts(8)},
+    {client_id:'demo-luis', plan_name:'Solo entreno', amount_cents:4500, currency:'eur', period:'month', status:'past_due', current_period_end: ts(2), stripe_customer_id:'cus_demo_luis', last_payment_at: ts(32)},
+  ];
+  const pay = (cid, c, st, n, desc, method = 'stripe') => ({id: uid(), client_id: cid, amount_cents: c, currency:'eur', status: st, method, description: desc, paid_at: ts(n), created_at: ts(n)});
+  const payments = [pay('demo-ana', 7000, 'paid', 38, 'Primer pago con tarjeta'), pay('demo-ana', 7000, 'paid', 8, 'Cuota con tarjeta'),
+    pay('demo-luis', 4500, 'paid', 32, 'Primer pago con tarjeta'), pay('demo-luis', 4500, 'failed', 2, 'Pago con tarjeta fallido')];
+  return { profiles:[coach, ana, luis, marta], workout_plans:[plan], nutrition_plans:[nut], workout_logs: logs, body_metrics: mets, messages, progress_photos: [], documents: [], billing, payments };
 }
 
 const api = DEMO ? DemoAPI() : SupabaseAPI();
@@ -474,7 +519,8 @@ VIEWS.pending = async () => authWrap(`<h1>Hola, ${esc(firstName(S.me?.full_name)
    COACH
    ===================================================================== */
 VIEWS.clients = async () => {
-  const [clients, act] = await Promise.all([api.clients(), api.activity()]);
+  const [clients, act, bills] = await Promise.all([api.clients(), api.activity(), api.allBilling().catch(() => [])]);
+  const billOf = {}; bills.forEach(b => { billOf[b.client_id] = b; });
   const lastLog = {}, lastW = {};
   act.logs.forEach(l => { if (!lastLog[l.client_id] || l.date > lastLog[l.client_id]) lastLog[l.client_id] = l.date; });
   act.mets.forEach(m => { if (m.weight_kg != null && (!lastW[m.client_id] || m.date > lastW[m.client_id].date)) lastW[m.client_id] = m; });
@@ -484,20 +530,21 @@ VIEWS.clients = async () => {
   const active = clients.filter(c => c.status === 'active').length;
   const trained7 = clients.filter(c => lastLog[c.id] && daysAgo(lastLog[c.id]) <= 7).length;
   const row = c => {
-    const d = lastLog[c.id], late = c.status === 'active' && (d == null || daysAgo(d) > 7);
-    return `<div class="card tap item ${c.status === 'pending' ? 'pend' : late ? 'late' : ''}" data-act="openClient" data-id="${esc(c.id)}">
+    const d = lastLog[c.id], since = d || (c.created_at || '').slice(0,10), late = c.status === 'active' && !!since && daysAgo(since) > 7;
+    const ps = payState(billOf[c.id]);
+    return `<div class="card tap item ${c.status === 'pending' ? 'pend' : (late || ps.k === 'late') ? 'late' : ''}" data-act="openClient" data-id="${esc(c.id)}">
       <div class="avatar">${esc(initials(c.full_name))}</div>
       <div class="grow"><b>${esc(c.full_name || c.email)}</b>
         <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}</div></div>
       <span class="cnt hidden" data-badge="${esc(c.id)}" title="Mensajes sin leer"></span>
-      ${c.status === 'pending' ? `<button class="btn sm gold" data-act="activate" data-id="${esc(c.id)}">Activar</button>` : statusBadge(c.status)}
+      ${c.status === 'pending' ? `<button class="btn sm gold" data-act="activate" data-id="${esc(c.id)}">Activar</button>` : c.status === 'active' && ps.k !== 'none' ? `<span class="badge ${ps.cls}">${esc(ps.short)}</span>` : statusBadge(c.status)}
       <span class="chev">›</span></div>`;
   };
   return shell('Clientes', `
     <div class="stats" style="grid-template-columns:repeat(3,1fr)">
       <div class="stat"><small>Activos</small><b>${active}</b></div>
       <div class="stat"><small>Entrenaron 7 días</small><b>${trained7}</b><i class="muted">de ${active}</i></div>
-      <div class="stat"><small>Pendientes</small><b>${clients.filter(c => c.status === 'pending').length}</b></div>
+      <div class="stat"><small>Pagos fallidos</small><b class="${bills.some(b => payState(b).k === 'late') ? 'up' : ''}">${bills.filter(b => payState(b).k === 'late').length}</b></div>
     </div>
     <div style="position:relative;margin-top:12px"><input class="in" id="q" placeholder="Buscar cliente" value="${esc(S.p.q || '')}" style="padding-left:38px"><span style="position:absolute;left:12px;top:12px;width:18px;color:#a39a8c">${icon('search')}</span></div>
     ${pend.length ? `<div class="sec-title">Pendientes de activar</div><div class="list">${pend.map(row).join('')}</div>` : ''}
@@ -527,7 +574,7 @@ async function loadClient(id){
 VIEWS.client = async () => {
   const tab = S.p.tab || 'summary';
   const {c, plans, nuts, logs, mets} = await loadClient(S.p.id);
-  const tabs = [['summary','Resumen'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['chat','Mensajes'],['info','Ficha']];
+  const tabs = [['summary','Resumen'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['chat','Mensajes'],['pay','Pagos'],['info','Ficha']];
   let body = '';
   if (tab === 'summary') body = summaryHTML(c, plans, nuts, logs, mets);
   if (tab === 'train' || tab === 'food'){
@@ -544,6 +591,10 @@ VIEWS.client = async () => {
     const msgs = await api.messages(c.id);
     api.markRead(c.id, S.me.id).then(() => { S.unread[c.id] = 0; updateBadges(); }).catch(() => {});
     body = chatHTML(msgs);
+  }
+  if (tab === 'pay'){
+    const [b, pays] = await Promise.all([api.billing(c.id).catch(() => null), api.payments(c.id).catch(() => [])]);
+    S.cache.billing = b; body = coachPayHTML(c, b, pays);
   }
   if (tab === 'info') body = clientInfoHTML(c);
   return shell(c.full_name || c.email, `
@@ -614,6 +665,7 @@ VIEWS.client.mount = () => {
   };
   mountProgress();
   if (S.p.tab === 'chat') mountChat(S.p.id);
+  if (S.p.tab === 'pay') mountCoachPay(S.p.id);
 };
 
 /* ---------- Editor de plan de entreno ---------- */
@@ -721,10 +773,10 @@ async function myData(){
   return {plan: plans.find(p => p.active), nut: nuts.find(n => n.active), logs: pl, mets: pm};
 }
 VIEWS.train = async () => {
-  const [{plan, logs}, docs] = await Promise.all([myData(), api.docs(S.me.id).catch(() => [])]);
+  const [{plan, logs}, docs, bill] = await Promise.all([myData(), api.docs(S.me.id).catch(() => []), api.billing(S.me.id).catch(() => null)]);
   const durls = await api.fileUrls(docs.map(d => d.path)).catch(() => ({}));
   const docBlock = docsHTML(docs, durls, 'entreno', false);
-  const hello = `<div style="margin-bottom:6px"><h1>Hola, ${esc(firstName(S.me.full_name))}</h1><p class="muted small" style="margin:2px 0 0">${logs[0] ? `Tu último entreno fue ${relDate(logs[0].date)}.` : '¡A por el primer entreno!'}</p></div>`;
+  const hello = `<div style="margin-bottom:6px"><h1>Hola, ${esc(firstName(S.me.full_name))}</h1><p class="muted small" style="margin:2px 0 0">${logs[0] ? `Tu último entreno fue ${relDate(logs[0].date)}.` : '¡A por el primer entreno!'}</p></div>` + payBanner(bill);
   if (!plan) return shell('Entreno', hello + (docBlock || empty('Todavía no tienes plan', `${firstName(CFG.COACH_NAME) || 'Tu coach'} te lo preparará pronto.`)), {tabs: clientTabs('train'), sub: CFG.BRAND});
   const lastDay = logs.find(l => l.plan_id === plan.id)?.day_name;
   const nextIdx = lastDay ? (plan.days.findIndex(d => d.name === lastDay) + 1) % plan.days.length : 0;
@@ -890,10 +942,13 @@ VIEWS.metricNew.mount = bindDraft;
 /* ---------- Perfil (cliente) ---------- */
 VIEWS.profile = async () => {
   const c = S.me;
+  const [bill, pays] = await Promise.all([api.billing(c.id).catch(() => null), api.payments(c.id).catch(() => [])]);
   return shell('Perfil', `
     <div class="card item"><div class="avatar lg">${esc(initials(c.full_name))}</div><div><h2>${esc(c.full_name)}</h2><div class="muted small">${esc(c.email || '')}</div></div></div>
     ${c.goal ? `<div class="card cream" style="margin-top:10px"><div class="tiny muted">TU OBJETIVO</div><b>${esc(c.goal)}</b></div>` : ''}
-    <form class="stack" id="fMe" style="margin-top:12px">
+    ${clientPayHTML(bill, pays)}
+    <div class="sec-title">Tus datos</div>
+    <form class="stack" id="fMe">
       <label class="f">Nombre y apellidos<input class="in" name="full_name" value="${esc(c.full_name)}"></label>
       <div class="grid2"><label class="f">Teléfono<input class="in" name="phone" type="tel" value="${esc(c.phone)}"></label>
       <label class="f">Altura (cm)<input class="in" name="height_cm" inputmode="decimal" value="${esc(c.height_cm)}"></label></div>
@@ -1073,6 +1128,121 @@ document.addEventListener('change', async e => {
 });
 
 /* =====================================================================
+   Pagos
+   ===================================================================== */
+const PERIODS = [['month','Mensual','al mes',1],['quarter','Trimestral','cada 3 meses',3],['semester','Semestral','cada 6 meses',6],['year','Anual','al año',12],['once','Pago único','pago único',0]];
+const periodOf = k => PERIODS.find(p => p[0] === k) || PERIODS[0];
+const eur = c => c == null ? '-' : (c / 100).toLocaleString('es-ES', {style:'currency', currency:'EUR', minimumFractionDigits: c % 100 ? 2 : 0, maximumFractionDigits: 2});
+const euInput = c => c % 100 ? (c / 100).toFixed(2).replace('.', ',') : String(c / 100);
+const priceTxt = b => `${eur(b.amount_cents)}${b.period === 'once' ? '' : ' ' + periodOf(b.period)[2]}`;
+function payState(b){
+  if (!b || !b.amount_cents) return {k:'none', short:'Sin plan', cls:'', label:'Sin plan de pago'};
+  const end = b.current_period_end ? fmtDate(b.current_period_end.slice(0,10), {day:'numeric', month:'long'}) : '';
+  if (b.manual_until && b.manual_until >= today()) return {k:'ok', short:'Al día', cls:'ok', label:`Pagado a mano hasta el ${fmtDate(b.manual_until, {day:'numeric', month:'long'})}`};
+  if (['active','trialing'].includes(b.status)) return {k:'ok', short:'Al día', cls:'ok', label: b.cancel_at_period_end ? `Al día. Se cancela el ${end}` : `Al día${end ? `. Próximo cobro el ${end}` : ''}`};
+  if (b.status === 'paid_once') return {k:'ok', short:'Pagado', cls:'ok', label:'Pagado'};
+  if (['past_due','unpaid','incomplete'].includes(b.status)) return {k:'late', short:'Pago fallido', cls:'bad', label:'El último cobro ha fallado'};
+  if (b.status === 'canceled') return {k:'canceled', short:'Cancelado', cls:'warn', label:'Suscripción cancelada'};
+  return {k:'pending', short:'Sin pagar', cls:'gold', label:'Pendiente del primer pago'};
+}
+function payBanner(b){
+  const ps = payState(b);
+  if (ps.k === 'pending' || ps.k === 'canceled') return `<div class="card paycard" style="margin:10px 0 4px"><div class="row between"><div><div class="tiny muted">TU PLAN</div><b>${esc(b.plan_name)}</b><div class="small">${esc(priceTxt(b))}</div></div>
+    <button class="btn gold" data-act="payNow">${icon('card')} Pagar</button></div></div>`;
+  if (ps.k === 'late') return `<div class="card paycard bad" style="margin:10px 0 4px"><b>No se ha podido cobrar tu cuota</b><p class="small" style="margin:4px 0 10px">Revisa tu tarjeta para seguir con tu plan sin cortes.</p>
+    <button class="btn block" data-act="payPortal">${icon('card')} Actualizar tarjeta</button></div>`;
+  return '';
+}
+function paymentsTable(pays, asCoach){
+  if (!pays.length) return '<p class="small muted" style="margin:4px 2px">Todavía no hay pagos registrados.</p>';
+  return `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Fecha</th><th>Concepto</th><th>Importe</th><th></th></tr></thead><tbody>
+    ${pays.map(p => `<tr><td>${esc(fmtDate((p.paid_at || '').slice(0,10), {day:'numeric', month:'short', year:'2-digit'}))}</td>
+      <td>${esc(p.description || (p.method === 'manual' ? 'Pago a mano' : 'Pago con tarjeta'))}${p.status === 'failed' ? ' <span class="badge bad">Fallido</span>' : ''}</td>
+      <td><b>${eur(p.amount_cents)}</b></td>
+      <td style="white-space:nowrap">${p.invoice_url ? `<a href="${esc(p.invoice_url)}" target="_blank" rel="noopener">Recibo</a>` : ''}${asCoach && p.method === 'manual' ? `<button class="mini bad" data-act="delPayment" data-id="${esc(p.id)}" aria-label="Borrar">${icon('trash')}</button>` : ''}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+function clientPayHTML(b, pays){
+  if (!b || !b.amount_cents) return '';
+  const ps = payState(b);
+  return `<div class="sec-title">Mi plan</div>
+    <div class="card paycard ${ps.k === 'late' ? 'bad' : ''}">
+      <div class="row between"><div><b style="font-size:17px">${esc(b.plan_name)}</b><div class="small">${esc(priceTxt(b))}</div></div><span class="badge ${ps.cls}">${esc(ps.short)}</span></div>
+      <p class="small muted" style="margin:8px 0 12px">${esc(ps.label)}.</p>
+      <div class="stack">
+        ${['pending','canceled'].includes(ps.k) ? `<button class="btn gold block" data-act="payNow">${icon('card')} Pagar ahora</button>` : ''}
+        ${b.stripe_customer_id ? `<button class="btn light block" data-act="payPortal">${icon('card')} ${ps.k === 'late' ? 'Actualizar tarjeta' : 'Gestionar pago y recibos'}</button>` : ''}
+      </div>
+    </div>
+    <div class="sec-title">Mis pagos</div>${paymentsTable(pays.slice(0, 12), false)}`;
+}
+function coachPayHTML(c, b, pays){
+  const ps = payState(b), bb = b || {plan_name:'', amount_cents:null, period:'month'};
+  const hasSub = b && b.stripe_subscription_id && ['active','trialing','past_due','unpaid'].includes(b.status);
+  const stripeUrl = b && b.stripe_customer_id && !String(b.stripe_customer_id).startsWith('cus_demo') ? `https://dashboard.stripe.com/${CFG.STRIPE_MODE === 'live' ? '' : 'test/'}customers/${encodeURIComponent(b.stripe_customer_id)}` : '';
+  const def = new Date(); def.setMonth(def.getMonth() + (periodOf(bb.period)[3] || 1)); const defUntil = def.toLocaleDateString('sv-SE');
+  return `
+    <div class="card paycard ${ps.k === 'late' ? 'bad' : ''}">
+      <div class="row between"><div><div class="tiny muted">ESTADO DEL PAGO</div><b style="font-size:18px">${esc(ps.label)}</b></div><span class="badge ${ps.cls}">${esc(ps.short)}</span></div>
+      ${b && b.last_payment_at ? `<div class="small muted" style="margin-top:6px">Último pago: ${relDate(b.last_payment_at.slice(0,10))}</div>` : ''}
+      ${stripeUrl ? `<a class="btn sm light" style="margin-top:10px" href="${esc(stripeUrl)}" target="_blank" rel="noopener">${icon('ext')} Ver en Stripe</a>` : ''}
+    </div>
+    <div class="sec-title">Plan de pago</div>
+    <form class="card stack" id="fBill">
+      <label class="f">Nombre del plan (lo verá el cliente)<input class="in" name="plan_name" value="${esc(bb.plan_name)}" placeholder="Por ejemplo: Entreno + alimentación" required></label>
+      <div class="grid2">
+        <label class="f">Precio (€, IVA incluido)<input class="in" name="amount" inputmode="decimal" value="${bb.amount_cents != null ? esc(euInput(bb.amount_cents)) : ''}" placeholder="60" required></label>
+        <label class="f">Cada cuánto<select class="in" name="period">${PERIODS.map(p => `<option value="${p[0]}" ${bb.period === p[0] ? 'selected' : ''}>${p[1]}</option>`).join('')}</select></label>
+      </div>
+      ${hasSub ? '<p class="small info" style="margin:0">Este cliente ya tiene una suscripción en marcha. Si cambias el precio, se aplicará cuando vuelva a suscribirse. Para cambiarlo ya, cancélala desde Stripe y pídele que pague de nuevo.</p>' : ''}
+      <button class="btn block" type="submit">${icon('check')} Guardar plan de pago</button>
+      ${!b || !b.amount_cents ? `<p class="small muted" style="margin:0">Al guardarlo, a ${esc(firstName(c.full_name))} le aparecerá el botón Pagar en su app.</p>` : ''}
+    </form>
+    <div class="sec-title">Pago a mano</div>
+    <form class="card stack" id="fManual">
+      <p class="small muted" style="margin:0">Para quien te paga en efectivo, por Bizum o por transferencia.</p>
+      <div class="grid2">
+        <label class="f">Importe (€)<input class="in" name="amount" inputmode="decimal" value="${bb.amount_cents != null ? esc(euInput(bb.amount_cents)) : ''}" required></label>
+        <label class="f">Al día hasta<input class="in" name="until" type="date" value="${defUntil}" required></label>
+      </div>
+      <label class="f">Concepto<input class="in" name="desc" value="Pago a mano" maxlength="80"></label>
+      <button class="btn light block" type="submit">${icon('plus')} Apuntar pago</button>
+    </form>
+    <div class="sec-title">Historial de pagos</div>${paymentsTable(pays, true)}`;
+}
+function mountCoachPay(cid){
+  const fb = $('#fBill');
+  if (fb) fb.onsubmit = async e => {
+    e.preventDefault();
+    const amount = num(fb.amount.value);
+    if (amount == null || amount <= 0) return toast('Pon un precio válido');
+    try { await api.saveBilling({client_id: cid, plan_name: fb.plan_name.value.trim(), amount_cents: Math.round(amount * 100), currency: 'eur', period: fb.period.value}); toast('Plan de pago guardado'); render(); }
+    catch(err){ toast(err.message); }
+  };
+  const fm = $('#fManual');
+  if (fm) fm.onsubmit = async e => {
+    e.preventDefault();
+    const amount = num(fm.amount.value); if (amount == null || amount <= 0) return toast('Pon un importe válido');
+    try {
+      await api.addManualPayment({client_id: cid, amount_cents: Math.round(amount * 100), currency: 'eur', status: 'paid', description: fm.desc.value.trim() || 'Pago a mano', paid_at: new Date().toISOString()});
+      const b = S.cache.billing || {};
+      await api.saveBilling({client_id: cid, plan_name: b.plan_name || 'Plan', amount_cents: b.amount_cents ?? Math.round(amount * 100), currency: 'eur', period: b.period || 'month', manual_until: fm.until.value});
+      toast('Pago apuntado'); render();
+    } catch(err){ toast(err.message); }
+  };
+}
+// Vuelta desde la página de pago de Stripe
+(() => {
+  const m = location.search.match(/[?&]pago=(ok|cancelado)/);
+  if (!m) return;
+  try { history.replaceState(null, '', location.pathname + location.hash); } catch(e){}
+  setTimeout(() => {
+    if (m[1] === 'ok'){ toast('¡Pago recibido! Gracias. En unos segundos lo verás al día.', 4000); setTimeout(() => { if (S.me) render(); }, 4000); }
+    else toast('Pago cancelado. No se te ha cobrado nada.', 3500);
+  }, 900);
+})();
+
+/* =====================================================================
    Acciones (delegación de eventos)
    ===================================================================== */
 const reorder = (arr, i, dir) => { const j = i + dir; if (j < 0 || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; };
@@ -1189,6 +1359,23 @@ const ACT = {
     if (!(await confirmBox('Borrar PDF', `Se borrará "${d.name}" y tu cliente dejará de verlo.`, 'Borrar', true))) return;
     await api.deleteDoc(d); toast('PDF borrado'); render();
   },
+  async payNow(el){
+    el.disabled = true; const t = el.innerHTML; el.textContent = 'Abriendo pago seguro';
+    try {
+      const r = await api.checkout();
+      if (r && r.demo){ toast('Demo: pago simulado. En la app real se abre la página segura de Stripe.', 3500); render(); return; }
+      if (r && r.url) location.href = r.url; else throw new Error('No se ha podido abrir el pago');
+    } catch(e){ toast(e.message); el.disabled = false; el.innerHTML = t; }
+  },
+  async payPortal(el){
+    el.disabled = true;
+    try {
+      const r = await api.portal();
+      if (r && r.demo){ toast('Demo: en la app real se abre la página segura de Stripe para cambiar la tarjeta, ver recibos o cancelar.', 4000); el.disabled = false; return; }
+      if (r && r.url) location.href = r.url; else throw new Error('No se ha podido abrir la gestión de pagos');
+    } catch(e){ toast(e.message); el.disabled = false; }
+  },
+  async delPayment(el){ if (!(await confirmBox('Borrar pago', 'Se borrará este pago apuntado a mano.', 'Borrar', true))) return; await api.deletePayment(el.dataset.id); toast('Pago borrado'); render(); },
   async delMetric(el){ if (!(await confirmBox('Borrar medidas', 'Se borrará este registro.', 'Borrar', true))) return; await api.deleteMetric(el.dataset.id); toast('Registro borrado'); render(); },
 };
 document.addEventListener('click', async e => {
