@@ -1178,7 +1178,7 @@ function clientPayHTML(b, pays){
 }
 function coachPayHTML(c, b, pays){
   const ps = payState(b), bb = b || {plan_name:'', amount_cents:null, period:'month'};
-  const hasSub = b && b.stripe_subscription_id && ['active','trialing','past_due','unpaid'].includes(b.status);
+  const hasSub = !!(b && b.period !== 'once' && (b.stripe_subscription_id || b.stripe_customer_id) && ['active','trialing','past_due','unpaid'].includes(b.status));
   const stripeUrl = b && b.stripe_customer_id && !String(b.stripe_customer_id).startsWith('cus_demo') ? `https://dashboard.stripe.com/${CFG.STRIPE_MODE === 'live' ? '' : 'test/'}customers/${encodeURIComponent(b.stripe_customer_id)}` : '';
   const def = new Date(); def.setMonth(def.getMonth() + (periodOf(bb.period)[3] || 1)); const defUntil = def.toLocaleDateString('sv-SE');
   return `
@@ -1196,6 +1196,7 @@ function coachPayHTML(c, b, pays){
       </div>
       ${hasSub ? '<p class="small info" style="margin:0">Este cliente ya tiene una suscripción en marcha. Si cambias el precio, se aplicará cuando vuelva a suscribirse. Para cambiarlo ya, cancélala desde Stripe y pídele que pague de nuevo.</p>' : ''}
       <button class="btn block" type="submit">${icon('check')} Guardar plan de pago</button>
+      ${b && b.amount_cents ? `<button class="btn danger block" type="button" data-act="removePlan" data-sub="${hasSub ? 1 : 0}">${icon('trash')} Quitar plan</button>` : ''}
       ${!b || !b.amount_cents ? `<p class="small muted" style="margin:0">Al guardarlo, a ${esc(firstName(c.full_name))} le aparecerá el botón Pagar en su app.</p>` : ''}
     </form>
     <div class="sec-title">Pago a mano</div>
@@ -1374,6 +1375,15 @@ const ACT = {
       if (r && r.demo){ toast('Demo: en la app real se abre la página segura de Stripe para cambiar la tarjeta, ver recibos o cancelar.', 4000); el.disabled = false; return; }
       if (r && r.url) location.href = r.url; else throw new Error('No se ha podido abrir la gestión de pagos');
     } catch(e){ toast(e.message); el.disabled = false; }
+  },
+  async removePlan(el){
+    const cid = S.p.id, b = S.cache.billing;
+    if (el.dataset.sub === '1'){
+      return modal(`<h2>Primero cancela la suscripción</h2><p class="muted">Este cliente tiene una suscripción en marcha y Stripe le seguiría cobrando. Pulsa <b>Ver en Stripe</b>, cancela su suscripción y después ya podrás quitarle el plan aquí.</p><button class="btn block" data-x="ok" style="margin-top:12px">Entendido</button>`, (m, close) => { m.querySelector('[data-x=ok]').onclick = close; });
+    }
+    if (!(await confirmBox('Quitar plan de pago', 'El cliente dejará de ver el botón Pagar. El historial de pagos se conserva y podrás ponerle otro plan cuando quieras.', 'Quitar plan', true))) return;
+    await api.saveBilling({client_id: cid, plan_name: null, amount_cents: null, currency: 'eur', period: (b && b.period) || 'month', manual_until: null});
+    toast('Plan quitado'); render();
   },
   async delPayment(el){ if (!(await confirmBox('Borrar pago', 'Se borrará este pago apuntado a mano.', 'Borrar', true))) return; await api.deletePayment(el.dataset.id); toast('Pago borrado'); render(); },
   async delMetric(el){ if (!(await confirmBox('Borrar medidas', 'Se borrará este registro.', 'Borrar', true))) return; await api.deleteMetric(el.dataset.id); toast('Registro borrado'); render(); },
