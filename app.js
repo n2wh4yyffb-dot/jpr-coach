@@ -945,7 +945,7 @@ VIEWS.profile = async () => {
   const [bill, pays] = await Promise.all([api.billing(c.id).catch(() => null), api.payments(c.id).catch(() => [])]);
   return shell('Perfil', `
     <div class="card item"><div class="avatar lg">${esc(initials(c.full_name))}</div><div><h2>${esc(c.full_name)}</h2><div class="muted small">${esc(c.email || '')}</div></div></div>
-    ${c.goal ? `<div class="card cream" style="margin-top:10px"><div class="tiny muted">TU OBJETIVO</div><b>${esc(c.goal)}</b></div>` : ''}
+    ${c.goal ? `<div class="card cream" style="margin-top:10px"><div class="small muted">Tu objetivo</div><b>${esc(c.goal)}</b></div>` : ''}
     ${clientPayHTML(bill, pays)}
     <div class="sec-title">Tus datos</div>
     <form class="stack" id="fMe">
@@ -1147,7 +1147,7 @@ function payState(b){
 }
 function payBanner(b){
   const ps = payState(b);
-  if (ps.k === 'pending' || ps.k === 'canceled') return `<div class="card paycard" style="margin:10px 0 4px"><div class="row between"><div><div class="tiny muted">TU PLAN</div><b>${esc(b.plan_name)}</b><div class="small">${esc(priceTxt(b))}</div></div>
+  if (ps.k === 'pending' || ps.k === 'canceled') return `<div class="card paycard" style="margin:10px 0 4px"><div class="row between"><div><div class="small muted">Tu plan</div><b>${esc(b.plan_name)}</b><div class="small">${esc(priceTxt(b))}</div></div>
     <button class="btn gold" data-act="payNow">${icon('card')} Pagar</button></div></div>`;
   if (ps.k === 'late') return `<div class="card paycard bad" style="margin:10px 0 4px"><b>No se ha podido cobrar tu cuota</b><p class="small" style="margin:4px 0 10px">Revisa tu tarjeta para seguir con tu plan sin cortes.</p>
     <button class="btn block" data-act="payPortal">${icon('card')} Actualizar tarjeta</button></div>`;
@@ -1183,7 +1183,7 @@ function coachPayHTML(c, b, pays){
   const def = new Date(); def.setMonth(def.getMonth() + (periodOf(bb.period)[3] || 1)); const defUntil = def.toLocaleDateString('sv-SE');
   return `
     <div class="card paycard ${ps.k === 'late' ? 'bad' : ''}">
-      <div class="row between"><div><div class="tiny muted">ESTADO DEL PAGO</div><b style="font-size:18px">${esc(ps.label)}</b></div><span class="badge ${ps.cls}">${esc(ps.short)}</span></div>
+      <div class="row between"><div><div class="small muted">Estado del pago</div><b style="font-size:18px">${esc(ps.label)}</b></div><span class="badge ${ps.cls}">${esc(ps.short)}</span></div>
       ${b && b.last_payment_at ? `<div class="small muted" style="margin-top:6px">Último pago: ${relDate(b.last_payment_at.slice(0,10))}</div>` : ''}
       ${stripeUrl ? `<a class="btn sm light" style="margin-top:10px" href="${esc(stripeUrl)}" target="_blank" rel="noopener">${icon('ext')} Ver en Stripe</a>` : ''}
     </div>
