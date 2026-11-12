@@ -572,7 +572,7 @@ const WELCOME_DEFAULT = {
 };
 async function welcomeText(){
   const st = await api.settings().catch(() => ({}));
-  return {title: st.welcome_title ?? WELCOME_DEFAULT.title, body: st.welcome_body ?? WELCOME_DEFAULT.body};
+  return {title: st.welcome_title ?? WELCOME_DEFAULT.title, body: st.welcome_body ?? WELCOME_DEFAULT.body, mode: st.welcome_mode === 'first' ? 'first' : 'always'};
 }
 const fillName = (t, name) => String(t || '').replace(/\{nombre\}/gi, firstName(name) || '');
 function showWelcome({title, body}, name, onDone){
@@ -588,9 +588,13 @@ function showWelcome({title, body}, name, onDone){
 const WKEY = id => 'jpr-welcomed-' + id;
 async function maybeWelcome(){
   const me = S.me;
-  if (!me || me.role !== 'client' || me.status !== 'active' || me.welcomed_at) return;
-  try { if (localStorage.getItem(WKEY(me.id))) return; } catch(e){}
+  if (document.querySelector('.welcome')) return;
+  if (!me || me.role !== 'client' || me.status !== 'active') return;
   const txt = await welcomeText();
+  if (txt.mode === 'first'){
+    if (me.welcomed_at) return;
+    try { if (localStorage.getItem(WKEY(me.id))) return; } catch(e){}
+  }
   showWelcome(txt, me.full_name, async () => {
     try { localStorage.setItem(WKEY(me.id), '1'); } catch(e){}
     try { S.me = await api.updateProfile(me.id, {welcomed_at: new Date().toISOString()}, false) || S.me; localStorage.removeItem(WKEY(me.id)); } catch(e){}
@@ -601,7 +605,10 @@ VIEWS.coachProfile = async () => { const wt = await welcomeText(); return shell(
   <div class="card item"><div class="avatar lg">${esc(initials(S.me.full_name))}</div><div><h2>${esc(S.me.full_name)}</h2><div class="muted small">${esc(S.me.email || '')}</div><span class="badge navy">Coach</span></div></div>
   <div class="sec-title">Mensaje de bienvenida</div>
   <form class="card stack" id="fWelcome">
-    <p class="small muted" style="margin:0">Lo ve cada cliente nuevo una sola vez, la primera vez que entra con la cuenta activada. Escribe {nombre} y saldrá el nombre de cada uno.</p>
+    <label class="f">Cuándo sale<select class="in" name="mode">
+      <option value="always" ${wt.mode === 'always' ? 'selected' : ''}>Cada vez que abren la app</option>
+      <option value="first" ${wt.mode === 'first' ? 'selected' : ''}>Solo la primera vez que entran</option></select></label>
+    <p class="small muted" style="margin:0">Lo ven tus clientes con la cuenta activada. Escribe {nombre} y saldrá el nombre de cada uno.</p>
     <label class="f">Título<input class="in" name="title" maxlength="80" value="${esc(wt.title)}"></label>
     <label class="f">Texto<textarea class="in" name="body" rows="12" maxlength="3000">${esc(wt.body)}</textarea></label>
     <p class="tiny muted" style="margin:-4px 0 0">Deja una línea en blanco para separar párrafos.</p>
@@ -618,7 +625,7 @@ VIEWS.coachProfile.mount = () => {
     e.preventDefault(); const b = f.querySelector('[type=submit]'); b.disabled = true;
     try {
       const title = f.title.value.trim() || WELCOME_DEFAULT.title, body = f.body.value.trim() || WELCOME_DEFAULT.body;
-      await api.saveSetting('welcome_title', title); await api.saveSetting('welcome_body', body);
+      await api.saveSetting('welcome_title', title); await api.saveSetting('welcome_body', body); await api.saveSetting('welcome_mode', f.mode.value);
       toast('Mensaje de bienvenida guardado');
     } catch(err){ toast(err.message); }
     b.disabled = false;
@@ -655,7 +662,7 @@ VIEWS.client = async () => {
     const [b, pays] = await Promise.all([api.billing(c.id).catch(() => null), api.payments(c.id).catch(() => [])]);
     S.cache.billing = b; body = coachPayHTML(c, b, pays);
   }
-  if (tab === 'info') body = clientInfoHTML(c);
+  if (tab === 'info') body = clientInfoHTML(c, (await welcomeText()).mode);
   return shell(c.full_name || c.email, `
     <div class="seg" style="margin-bottom:12px">${tabs.map(([k,l]) => `<button class="${tab === k ? 'on' : ''}" data-act="ctab" data-v="${k}">${l}${k === 'chat' ? ` <span class="cnt hidden" data-badge="${esc(c.id)}"></span>` : ''}</button>`).join('')}</div>
     ${body}`, {backBtn: true, sub: c.status === 'pending' ? 'Pendiente de activar' : c.goal || 'Cliente'});
@@ -703,7 +710,7 @@ function plansListHTML(c, plans, kind){
     </div>`).join('')}</div><div style="margin-top:12px">${newBtn}</div>
     <p class="small muted" style="margin-top:8px">El cliente solo ve el plan activo. Al activar uno, el anterior pasa a archivado.</p>`;
 }
-function clientInfoHTML(c){
+function clientInfoHTML(c, wmode = 'always'){
   return `<form class="stack" id="fInfo">
     <label class="f">Nombre y apellidos<input class="in" name="full_name" value="${esc(c.full_name)}"></label>
     <div class="grid2"><label class="f">Teléfono<input class="in" name="phone" type="tel" value="${esc(c.phone)}"></label>
@@ -714,8 +721,8 @@ function clientInfoHTML(c){
     <label class="f">Notas privadas (el cliente no las ve)<textarea class="in" name="notes">${esc(c.notes)}</textarea></label>
     <div class="small muted">Email: ${esc(c.email || '-')}. ${c.consent_at ? `Consentimiento aceptado el ${fmtDate(c.consent_at.slice(0,10), {day:'numeric', month:'long', year:'numeric'})}.` : 'Sin consentimiento registrado.'}</div>
     <button class="btn block" type="submit">Guardar ficha</button></form>
-    <div class="card row between" style="margin-top:14px;gap:12px"><div class="grow"><b>Mensaje de bienvenida</b><div class="small muted">${c.welcomed_at ? `Lo vio el ${esc(fmtDate(c.welcomed_at.slice(0,10), {day:'numeric', month:'long', year:'numeric'}))}.` : 'Lo verá la próxima vez que entre a la app.'}</div></div>
-    ${c.welcomed_at ? `<button class="btn sm light" data-act="welcomeReset" data-id="${esc(c.id)}">Mostrar otra vez</button>` : ''}</div>`;
+    <div class="card row between" style="margin-top:14px;gap:12px"><div class="grow"><b>Mensaje de bienvenida</b><div class="small muted">${wmode === 'always' ? 'Lo ve cada vez que abre la app. Puedes cambiarlo en tu Perfil.' : c.welcomed_at ? `Lo vio el ${esc(fmtDate(c.welcomed_at.slice(0,10), {day:'numeric', month:'long', year:'numeric'}))}.` : 'Lo verá la próxima vez que entre a la app.'}</div></div>
+    ${wmode === 'first' && c.welcomed_at ? `<button class="btn sm light" data-act="welcomeReset" data-id="${esc(c.id)}">Mostrar otra vez</button>` : ''}</div>`;
 }
 VIEWS.client.mount = () => {
   const f = $('#fInfo');
@@ -1371,7 +1378,12 @@ function onNewMessage(m){
   S.unread[m.client_id] = (S.unread[m.client_id] || 0) + 1; updateBadges();
   toast(S.me.role === 'coach' ? 'Nuevo mensaje de un cliente' : `Nuevo mensaje de ${firstName(CFG.COACH_NAME) || 'tu coach'}`);
 }
+let hiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden'){ hiddenAt = Date.now(); return; }
+  // En el iPhone la app suele quedarse abierta en segundo plano: si vuelves tras 20 min, cuenta como abrirla
+  if (S.me && hiddenAt && Date.now() - hiddenAt > 20 * 60 * 1000 && !document.querySelector('.welcome')) maybeWelcome();
+  hiddenAt = 0;
   if (document.visibilityState !== 'visible' || !S.me) return;
   refreshUnread();
   if (S.view === 'chat' || (S.view === 'client' && S.p.tab === 'chat')) render();
