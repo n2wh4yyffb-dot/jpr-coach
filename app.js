@@ -93,7 +93,7 @@ const TABLES = {
   billing: ['client_id','plan_name','amount_cents','currency','period','manual_until'],
   payments: ['id','client_id','amount_cents','currency','status','description','paid_at'],
 };
-const PROFILE_FIELDS_CLIENT = ['full_name','phone','birth_date','height_cm','goal'];
+const PROFILE_FIELDS_CLIENT = ['full_name','phone','birth_date','height_cm','goal','welcomed_at'];
 const PROFILE_FIELDS_COACH = [...PROFILE_FIELDS_CLIENT, 'status', 'notes'];
 const pick = (o, keys) => Object.fromEntries(keys.filter(k => k in o).map(k => [k, o[k] === '' ? null : o[k]]));
 
@@ -131,6 +131,8 @@ function SupabaseAPI(){
       return {logs, mets};
     },
     async profile(id){ return ok(await sb.from('profiles').select('*').eq('id', id).single()); },
+    async settings(){ const r = ok(await sb.from('app_settings').select('key,value')); return Object.fromEntries(r.map(x => [x.key, x.value])); },
+    async saveSetting(key, value){ return ok(await sb.from('app_settings').upsert({key, value, updated_at: new Date().toISOString()})); },
     async updateProfile(id, patch, asCoach){ return ok(await sb.from('profiles').update(pick(patch, asCoach ? PROFILE_FIELDS_COACH : PROFILE_FIELDS_CLIENT)).eq('id', id).select().single()); },
     plans: cid => list('workout_plans', cid),
     savePlan: row => setActive('workout_plans', row),
@@ -220,6 +222,8 @@ function DemoAPI(){
     async clients(){ return wait(db.profiles.filter(p => p.role === 'client').sort((a,b) => a.full_name.localeCompare(b.full_name))); },
     async activity(){ return wait({logs: db.workout_logs, mets: db.body_metrics}); },
     async profile(id){ return wait(db.profiles.find(p => p.id === id)); },
+    async settings(){ return wait(db.settings || {}); },
+    async saveSetting(key, value){ db.settings = {...(db.settings || {}), [key]: value}; save(); return wait(null); },
     async updateProfile(id, patch, asCoach){ const p = db.profiles.find(x => x.id === id); Object.assign(p, pick(patch, asCoach ? PROFILE_FIELDS_COACH : PROFILE_FIELDS_CLIENT)); save(); return wait(p); },
     plans: cid => wait(byClient('workout_plans', cid).sort((a,b) => b.created_at.localeCompare(a.created_at))),
     savePlan: row => upsert('workout_plans', row),
@@ -278,8 +282,8 @@ function seed(){
   const d = n => { const x = new Date(); x.setDate(x.getDate() - n); x.setMinutes(x.getMinutes() - x.getTimezoneOffset()); return x.toISOString().slice(0,10); };
   const ts = n => new Date(Date.now() - n*864e5).toISOString();
   const coach = {id:'demo-coach', email:'coach@demo', full_name: CFG.COACH_NAME || 'Coach', role:'coach', status:'active', created_at: ts(200)};
-  const ana = {id:'demo-ana', email:'ana@demo', full_name:'Ana García', role:'client', status:'active', phone:'600 111 222', birth_date:'1990-04-12', height_cm:165, goal:'Perder grasa y ganar fuerza en tren inferior', notes:'Molestias leves en rodilla izquierda. Vigilar sentadilla profunda.', consent_at: ts(60), created_at: ts(60)};
-  const luis = {id:'demo-luis', email:'luis@demo', full_name:'Luis Martín', role:'client', status:'active', height_cm:180, goal:'Ganar masa muscular', created_at: ts(30), consent_at: ts(30)};
+  const ana = {id:'demo-ana', email:'ana@demo', full_name:'Ana García', role:'client', status:'active', phone:'600 111 222', birth_date:'1990-04-12', height_cm:165, goal:'Perder grasa y ganar fuerza en tren inferior', notes:'Molestias leves en rodilla izquierda. Vigilar sentadilla profunda.', consent_at: ts(60), created_at: ts(60), welcomed_at: ts(60)};
+  const luis = {id:'demo-luis', email:'luis@demo', full_name:'Luis Martín', role:'client', status:'active', height_cm:180, goal:'Ganar masa muscular', created_at: ts(30), consent_at: ts(30), welcomed_at: ts(30)};
   const marta = {id:'demo-marta', email:'marta@demo', full_name:'Marta Ruiz', role:'client', status:'pending', goal:'', created_at: ts(1), consent_at: ts(1)};
   const ex = (name, sets, reps, rest, load, notes='') => ({name, sets, reps, rest, load, notes});
   const plan = {id:'demo-plan-ana', client_id:'demo-ana', name:'Bloque 1: base de fuerza', notes:'3 días por semana. Deja 1-2 repeticiones en reserva en todas las series.', active:true, created_at: ts(50), updated_at: ts(50), days:[
@@ -558,13 +562,65 @@ VIEWS.clients.mount = () => {
   q.oninput = () => { S.p.q = q.value; clearTimeout(q._t); q._t = setTimeout(async () => { const pos = q.selectionStart; await render(); const n = $('#q'); n.focus(); n.setSelectionRange(pos, pos); }, 250); };
 };
 
-VIEWS.coachProfile = async () => shell('Perfil', `
+/* ---------- Bienvenida (primera vez que entra un cliente) ---------- */
+const WELCOME_DEFAULT = {
+  title: '¡Hola, {nombre}!',
+  body: 'Te doy la bienvenida a JPR Coach. Desde hoy tienes aquí todo lo que vamos a trabajar juntos.\n\nEn Entreno está tu plan. Cuando acabes cada sesión, apunta los kilos y las repeticiones de cada serie. Así vemos semana a semana cómo vas mejorando.\n\nEn Alimentación tienes tu plan, con varias opciones en cada comida para que puedas ir cambiando.\n\nUna vez por semana entra en Progreso y registra tus medidas. Cada 2 a 4 semanas, sube también tus fotos.\n\nSi tienes cualquier duda, escríbeme por Mensajes. Te contesto yo personalmente.\n\n¡Vamos a por ello!\nJulián',
+};
+async function welcomeText(){
+  const st = await api.settings().catch(() => ({}));
+  return {title: st.welcome_title ?? WELCOME_DEFAULT.title, body: st.welcome_body ?? WELCOME_DEFAULT.body};
+}
+const fillName = (t, name) => String(t || '').replace(/\{nombre\}/gi, firstName(name) || '');
+function showWelcome({title, body}, name, onDone){
+  const paras = String(body || '').split(/\n\s*\n/).map(p => `<p>${esc(p.trim()).replace(/\n/g, '<br>')}</p>`).join('');
+  const w = document.createElement('div'); w.className = 'welcome'; w.setAttribute('role', 'dialog'); w.setAttribute('aria-modal', 'true');
+  w.innerHTML = `<div class="welcome-in"><img class="welcome-logo" src="assets/logo-light.png" alt="JPR Coach">
+    <h1>${esc(fillName(title, name))}</h1><div class="welcome-txt">${paras}</div>
+    <button class="btn gold block" data-x="go">Empezar</button></div>`;
+  document.body.appendChild(w);
+  const b = w.querySelector('[data-x=go]'); b.focus();
+  b.onclick = () => { w.classList.add('out'); setTimeout(() => w.remove(), 250); onDone && onDone(); };
+}
+const WKEY = id => 'jpr-welcomed-' + id;
+async function maybeWelcome(){
+  const me = S.me;
+  if (!me || me.role !== 'client' || me.status !== 'active' || me.welcomed_at) return;
+  try { if (localStorage.getItem(WKEY(me.id))) return; } catch(e){}
+  const txt = await welcomeText();
+  showWelcome(txt, me.full_name, async () => {
+    try { localStorage.setItem(WKEY(me.id), '1'); } catch(e){}
+    try { S.me = await api.updateProfile(me.id, {welcomed_at: new Date().toISOString()}, false) || S.me; localStorage.removeItem(WKEY(me.id)); } catch(e){}
+  });
+}
+
+VIEWS.coachProfile = async () => { const wt = await welcomeText(); return shell('Perfil', `
   <div class="card item"><div class="avatar lg">${esc(initials(S.me.full_name))}</div><div><h2>${esc(S.me.full_name)}</h2><div class="muted small">${esc(S.me.email || '')}</div><span class="badge navy">Coach</span></div></div>
+  <div class="sec-title">Mensaje de bienvenida</div>
+  <form class="card stack" id="fWelcome">
+    <p class="small muted" style="margin:0">Lo ve cada cliente nuevo una sola vez, la primera vez que entra con la cuenta activada. Escribe {nombre} y saldrá el nombre de cada uno.</p>
+    <label class="f">Título<input class="in" name="title" maxlength="80" value="${esc(wt.title)}"></label>
+    <label class="f">Texto<textarea class="in" name="body" rows="12" maxlength="3000">${esc(wt.body)}</textarea></label>
+    <p class="tiny muted" style="margin:-4px 0 0">Deja una línea en blanco para separar párrafos.</p>
+    <div class="grid2"><button class="btn light" type="button" data-act="welcomePreview">Ver cómo queda</button><button class="btn" type="submit">${icon('check')} Guardar</button></div>
+  </form>
   <div class="stack" style="margin-top:14px">
     <button class="btn light block" data-act="privacy">Ver política de privacidad (borrador)</button>
     ${DEMO ? '<button class="btn light block" data-act="resetDemo">Reiniciar datos de la demo</button>' : ''}
     <button class="btn danger block" data-act="logout">${icon('logout')} Cerrar sesión</button>
-  </div>`, {sub: CFG.BRAND, tabs: coachTabs('coachProfile')});
+  </div>`, {sub: CFG.BRAND, tabs: coachTabs('coachProfile')}); };
+VIEWS.coachProfile.mount = () => {
+  const f = $('#fWelcome'); if (!f) return;
+  f.onsubmit = async e => {
+    e.preventDefault(); const b = f.querySelector('[type=submit]'); b.disabled = true;
+    try {
+      const title = f.title.value.trim() || WELCOME_DEFAULT.title, body = f.body.value.trim() || WELCOME_DEFAULT.body;
+      await api.saveSetting('welcome_title', title); await api.saveSetting('welcome_body', body);
+      toast('Mensaje de bienvenida guardado');
+    } catch(err){ toast(err.message); }
+    b.disabled = false;
+  };
+};
 
 /* ---------- Ficha de cliente (coach) ---------- */
 async function loadClient(id){
@@ -654,7 +710,9 @@ function clientInfoHTML(c){
     <label class="f">Objetivo<input class="in" name="goal" value="${esc(c.goal)}"></label>
     <label class="f">Notas privadas (el cliente no las ve)<textarea class="in" name="notes">${esc(c.notes)}</textarea></label>
     <div class="small muted">Email: ${esc(c.email || '-')}. ${c.consent_at ? `Consentimiento aceptado el ${fmtDate(c.consent_at.slice(0,10), {day:'numeric', month:'long', year:'numeric'})}.` : 'Sin consentimiento registrado.'}</div>
-    <button class="btn block" type="submit">Guardar ficha</button></form>`;
+    <button class="btn block" type="submit">Guardar ficha</button></form>
+    <div class="card row between" style="margin-top:14px;gap:12px"><div class="grow"><b>Mensaje de bienvenida</b><div class="small muted">${c.welcomed_at ? `Lo vio el ${esc(fmtDate(c.welcomed_at.slice(0,10), {day:'numeric', month:'long', year:'numeric'}))}.` : 'Lo verá la próxima vez que entre a la app.'}</div></div>
+    ${c.welcomed_at ? `<button class="btn sm light" data-act="welcomeReset" data-id="${esc(c.id)}">Mostrar otra vez</button>` : ''}</div>`;
 }
 VIEWS.client.mount = () => {
   const f = $('#fInfo');
@@ -1446,6 +1504,11 @@ const ACT = {
     } catch(e){ toast(e.message); el.disabled = false; }
   },
   metricNew: () => go('metricNew'),
+  welcomePreview: () => { const f = $('#fWelcome'); showWelcome({title: f.title.value || WELCOME_DEFAULT.title, body: f.body.value || WELCOME_DEFAULT.body}, 'Ana García'); },
+  async welcomeReset(el){
+    if (!(await confirmBox('Mostrar la bienvenida', 'Tu cliente volverá a ver el mensaje de bienvenida la próxima vez que entre.', 'Sí, mostrar'))) return;
+    try { await api.updateProfile(el.dataset.id, {welcomed_at: null}, true); toast('La verá la próxima vez que entre'); render(); } catch(e){ toast(e.message); }
+  },
   logSummary: el => go('logSummary', {id: el.dataset.id, cid: el.dataset.cid}),
   mscale: el => { S.draft[el.dataset.k] = +el.dataset.v; el.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === el)); },
   async metricSave(el){
@@ -1540,6 +1603,7 @@ async function boot(){
     if (!S.unsub){ try { S.unsub = api.subscribe(onNewMessage); } catch(e){ console.warn(e); } }
     refreshUnread();
     home();
+    maybeWelcome();
   } catch(e){
     console.error(e);
     if (isNetErr(e)) $('#app').innerHTML = authWrap(`<h1>Sin conexión</h1><p>No hemos podido conectar. Comprueba tu internet y vuelve a intentarlo.</p><button class="btn block" data-act="reload">Reintentar</button>`);

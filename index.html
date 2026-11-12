@@ -317,6 +317,20 @@ label.btn{cursor:pointer}
 .sum-head{display:flex;flex-direction:column;margin:0 2px 12px}
 .sum-head b{font-style:italic;font-stretch:72%;font-weight:800;font-size:28px;color:var(--navy);line-height:1.05}
 .sum-head span{color:var(--steel);font-size:14px;margin-top:4px}
+
+/* Bienvenida */
+.welcome{position:fixed;inset:0;z-index:60;background:var(--navy);color:#fff;overflow:auto;display:flex;justify-content:center;animation:wIn .35s ease-out}
+.welcome::before{content:"";position:fixed;inset:0;background:url(assets/logo-light.png) center 58%/min(150vw,760px) no-repeat;opacity:.05;pointer-events:none}
+.welcome::after{content:"";position:fixed;left:0;right:0;top:0;height:4px;background:var(--gold)}
+.welcome-in{position:relative;width:100%;max-width:520px;padding:calc(env(safe-area-inset-top) + 34px) 24px calc(var(--safe-b) + 28px);display:flex;flex-direction:column;min-height:100%}
+.welcome-logo{width:132px;margin-bottom:26px}
+.welcome h1{font-style:italic;font-stretch:65%;font-weight:800;font-size:46px;line-height:1;margin:0 0 18px;color:#fff}
+.welcome-txt{flex:1;font-size:17px;line-height:1.55;color:#d9dfe5}
+.welcome-txt p{margin:0 0 14px}
+.welcome .btn{margin-top:18px;font-size:17px;padding:15px}
+.welcome.out{opacity:0;transition:opacity .25s}
+@keyframes wIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.welcome{animation:none}.welcome.out{transition:none}}
 </style>
 </head>
 <body>

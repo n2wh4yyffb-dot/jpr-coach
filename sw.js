@@ -1,5 +1,5 @@
 // Sube este número cada vez que actualices la app.
-const VERSION = 'jpr-v8';
+const VERSION = 'jpr-v9';
 const FILES = ['./', './index.html', './app.js', './config.js', './vendor/supabase.js', './manifest.webmanifest',
   './assets/logo-light.png', './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png',
   './fonts/archivo-latin-wdth-normal.woff2', './fonts/archivo-latin-wdth-italic.woff2', './assets/logo-mark.png'];
