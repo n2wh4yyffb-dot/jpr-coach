@@ -601,8 +601,19 @@ async function maybeWelcome(){
   });
 }
 
-VIEWS.coachProfile = async () => { const wt = await welcomeText(); return shell('Perfil', `
+VIEWS.coachProfile = async () => { const wt = await welcomeText(); await refreshSettings(); return shell('Perfil', `
   <div class="card item"><div class="avatar lg">${esc(initials(S.me.full_name))}</div><div><h2>${esc(S.me.full_name)}</h2><div class="muted small">${esc(S.me.email || '')}</div><span class="badge navy">Coach</span></div></div>
+  <div class="sec-title">Cómo te pagan</div>
+  <form class="card stack" id="fPayCfg">
+    <label class="f">Forma de pago<select class="in" name="mode">
+      <option value="transfer" ${payCfg().mode === 'transfer' ? 'selected' : ''}>Transferencia bancaria</option>
+      <option value="card" ${payCfg().mode === 'card' ? 'selected' : ''}>Tarjeta (Stripe)</option></select></label>
+    <label class="f">Titular de la cuenta<input class="in" name="holder" value="${esc(payCfg().holder)}" placeholder="${esc(CFG.COACH_NAME)}" maxlength="80"></label>
+    <label class="f">IBAN<input class="in" name="iban" value="${esc(payCfg().iban ? ibanFmt(payCfg().iban) : '')}" placeholder="ES00 0000 0000 0000 0000 0000" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
+    <label class="f">Concepto que deben poner<input class="in" name="concept" value="${esc(payCfg().concept)}" maxlength="60"></label>
+    <p class="tiny muted" style="margin:-4px 0 0">{nombre} se cambia por el nombre y apellidos de cada cliente. Con transferencia, tus clientes ven estos datos en lugar del botón de pagar con tarjeta, y tú apuntas cada pago en Pagos, en Pago a mano.</p>
+    <button class="btn" type="submit">${icon('check')} Guardar</button>
+  </form>
   <div class="sec-title">Mensaje de bienvenida</div>
   <form class="card stack" id="fWelcome">
     <label class="f">Cuándo sale<select class="in" name="mode">
@@ -620,6 +631,20 @@ VIEWS.coachProfile = async () => { const wt = await welcomeText(); return shell(
     <button class="btn danger block" data-act="logout">${icon('logout')} Cerrar sesión</button>
   </div>`, {sub: CFG.BRAND, tabs: coachTabs('coachProfile')}); };
 VIEWS.coachProfile.mount = () => {
+  const fp = $('#fPayCfg');
+  if (fp) fp.onsubmit = async e => {
+    e.preventDefault();
+    const iban = ibanClean(fp.iban.value);
+    if (iban && !ibanOk(iban)) return toast('Ese IBAN no es correcto. Revisa que no falte ni sobre ningún número.', 4000);
+    if (fp.mode.value === 'transfer' && !iban) return toast('Para cobrar por transferencia, escribe tu IBAN', 3500);
+    const b = fp.querySelector('[type=submit]'); b.disabled = true;
+    try {
+      await api.saveSetting('pay_mode', fp.mode.value); await api.saveSetting('pay_holder', fp.holder.value.trim());
+      await api.saveSetting('pay_iban', iban); await api.saveSetting('pay_concept', fp.concept.value.trim() || '{nombre} - cuota');
+      await refreshSettings(); fp.iban.value = iban ? ibanFmt(iban) : ''; toast('Forma de pago guardada');
+    } catch(err){ toast(err.message); }
+    b.disabled = false;
+  };
   const f = $('#fWelcome'); if (!f) return;
   f.onsubmit = async e => {
     e.preventDefault(); const b = f.querySelector('[type=submit]'); b.disabled = true;
@@ -1486,18 +1511,41 @@ const periodOf = k => PERIODS.find(p => p[0] === k) || PERIODS[0];
 const eur = c => c == null ? '-' : (c / 100).toLocaleString('es-ES', {style:'currency', currency:'EUR', minimumFractionDigits: c % 100 ? 2 : 0, maximumFractionDigits: 2});
 const euInput = c => c % 100 ? (c / 100).toFixed(2).replace('.', ',') : String(c / 100);
 const priceTxt = b => `${eur(b.amount_cents)}${b.period === 'once' ? '' : ' ' + periodOf(b.period)[2]}`;
+/* ---------- Pago por transferencia ---------- */
+const ibanClean = v => String(v || '').replace(/\s+/g, '').toUpperCase();
+const ibanFmt = v => ibanClean(v).replace(/(.{4})/g, '$1 ').trim();
+function ibanOk(v){
+  const x = ibanClean(v); if (!/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(x)) return false;
+  let m = 0; for (const ch of (x.slice(4) + x.slice(0, 4)).replace(/[A-Z]/g, c => c.charCodeAt(0) - 55)) m = (m * 10 + +ch) % 97;
+  return m === 1;
+}
+const payCfg = () => { const st = S.settings || {}; return {mode: st.pay_mode === 'transfer' ? 'transfer' : 'card', holder: st.pay_holder || '', iban: st.pay_iban || '', concept: st.pay_concept || '{nombre} - cuota'}; };
+async function refreshSettings(){ S.settings = await api.settings().catch(() => S.settings || {}); return S.settings; }
+function transferHTML(b, name){
+  const pc = payCfg();
+  if (!pc.iban) return `<p class="small" style="margin:0">Escribe a ${esc(firstName(CFG.COACH_NAME) || 'tu coach')} por Mensajes y te dirá cómo pagar.</p>`;
+  return `<div class="xfer">
+    <div><small>Titular</small><b>${esc(pc.holder || CFG.COACH_NAME)}</b></div>
+    <div class="row between" style="gap:10px"><div class="grow"><small>IBAN</small><b class="iban">${esc(ibanFmt(pc.iban))}</b></div><button class="btn sm" data-act="copyIban">${icon('copy')} Copiar</button></div>
+    <div class="grid2"><div><small>Importe</small><b>${esc(eur(b.amount_cents))}</b></div><div><small>Concepto</small><b>${esc(String(pc.concept).replace(/\{nombre\}/gi, name || ''))}</b></div></div>
+  </div>
+  <p class="tiny muted" style="margin:8px 0 0">Cuando ${esc(firstName(CFG.COACH_NAME) || 'tu coach')} reciba la transferencia, la marcará como pagada y aquí saldrá al día.</p>`;
+}
 function payState(b){
   if (!b || !b.amount_cents) return {k:'none', short:'Sin plan', cls:'', label:'Sin plan de pago'};
   const end = b.current_period_end ? fmtDate(b.current_period_end.slice(0,10), {day:'numeric', month:'long'}) : '';
-  if (b.manual_until && b.manual_until >= today()) return {k:'ok', short:'Al día', cls:'ok', label:`Pagado a mano hasta el ${fmtDate(b.manual_until, {day:'numeric', month:'long'})}`};
+  if (b.manual_until && b.manual_until >= today()) return {k:'ok', short:'Al día', cls:'ok', label:`Pagado hasta el ${fmtDate(b.manual_until, {day:'numeric', month:'long'})}`};
   if (['active','trialing'].includes(b.status)) return {k:'ok', short:'Al día', cls:'ok', label: b.cancel_at_period_end ? `Al día. Se cancela el ${end}` : `Al día${end ? `. Próximo cobro el ${end}` : ''}`};
   if (b.status === 'paid_once') return {k:'ok', short:'Pagado', cls:'ok', label:'Pagado'};
   if (['past_due','unpaid','incomplete'].includes(b.status)) return {k:'late', short:'Pago fallido', cls:'bad', label:'El último cobro ha fallado'};
   if (b.status === 'canceled') return {k:'canceled', short:'Cancelado', cls:'warn', label:'Suscripción cancelada'};
+  if (b.manual_until) return {k:'pending', short:'Toca pagar', cls:'gold', label:`Pagado hasta el ${fmtDate(b.manual_until, {day:'numeric', month:'long'})}. Toca renovar`};
   return {k:'pending', short:'Sin pagar', cls:'gold', label:'Pendiente del primer pago'};
 }
 function payBanner(b){
   const ps = payState(b);
+  if ((ps.k === 'pending' || ps.k === 'canceled') && payCfg().mode === 'transfer') return `<div class="card paycard" style="margin:10px 0 4px"><div class="row between"><div><div class="small muted">Tu plan</div><b>${esc(b.plan_name)}</b><div class="small">${esc(priceTxt(b))}. Pago por transferencia</div></div>
+    <button class="btn gold" data-act="payTransfer">${icon('card')} Cómo pagar</button></div></div>`;
   if (ps.k === 'pending' || ps.k === 'canceled') return `<div class="card paycard" style="margin:10px 0 4px"><div class="row between"><div><div class="small muted">Tu plan</div><b>${esc(b.plan_name)}</b><div class="small">${esc(priceTxt(b))}</div></div>
     <button class="btn gold" data-act="payNow">${icon('card')} Pagar</button></div></div>`;
   if (ps.k === 'late') return `<div class="card paycard bad" style="margin:10px 0 4px"><b>No se ha podido cobrar tu cuota</b><p class="small" style="margin:4px 0 10px">Revisa tu tarjeta para seguir con tu plan sin cortes.</p>
@@ -1520,8 +1568,9 @@ function clientPayHTML(b, pays){
     <div class="card paycard ${ps.k === 'late' ? 'bad' : ''}">
       <div class="row between"><div><b style="font-size:17px">${esc(b.plan_name)}</b><div class="small">${esc(priceTxt(b))}</div></div><span class="badge ${ps.cls}">${esc(ps.short)}</span></div>
       <p class="small muted" style="margin:8px 0 12px">${esc(ps.label)}.</p>
+      ${payCfg().mode === 'transfer' ? (['pending','canceled'].includes(ps.k) ? `<div class="small" style="font-weight:700;margin:0 0 8px">Paga por transferencia con estos datos:</div>${transferHTML(b, S.me.full_name)}` : `<button class="btn light block" data-act="payTransfer">Ver datos para la transferencia</button>`) : ''}
       <div class="stack">
-        ${['pending','canceled'].includes(ps.k) ? `<button class="btn gold block" data-act="payNow">${icon('card')} Pagar ahora</button>` : ''}
+        ${['pending','canceled'].includes(ps.k) && payCfg().mode !== 'transfer' ? `<button class="btn gold block" data-act="payNow">${icon('card')} Pagar ahora</button>` : ''}
         ${b.stripe_customer_id ? `<button class="btn light block" data-act="payPortal">${icon('card')} ${ps.k === 'late' ? 'Actualizar tarjeta' : 'Gestionar pago y recibos'}</button>` : ''}
       </div>
     </div>
@@ -1548,16 +1597,16 @@ function coachPayHTML(c, b, pays){
       ${hasSub ? '<p class="small info" style="margin:0">Este cliente ya tiene una suscripción en marcha. Si cambias el precio, se aplicará cuando vuelva a suscribirse. Para cambiarlo ya, cancélala desde Stripe y pídele que pague de nuevo.</p>' : ''}
       <button class="btn block" type="submit">${icon('check')} Guardar plan de pago</button>
       ${b && b.amount_cents ? `<button class="btn danger block" type="button" data-act="removePlan" data-sub="${hasSub ? 1 : 0}">${icon('trash')} Quitar plan</button>` : ''}
-      ${!b || !b.amount_cents ? `<p class="small muted" style="margin:0">Al guardarlo, a ${esc(firstName(c.full_name))} le aparecerá el botón Pagar en su app.</p>` : ''}
+      ${!b || !b.amount_cents ? `<p class="small muted" style="margin:0">${payCfg().mode === 'transfer' ? `Al guardarlo, a ${esc(firstName(c.full_name))} le aparecerán en su app tus datos para la transferencia.` : `Al guardarlo, a ${esc(firstName(c.full_name))} le aparecerá el botón Pagar en su app.`}</p>` : ''}
     </form>
     <div class="sec-title">Pago a mano</div>
     <form class="card stack" id="fManual">
-      <p class="small muted" style="margin:0">Para quien te paga en efectivo, por Bizum o por transferencia.</p>
+      <p class="small muted" style="margin:0">${payCfg().mode === 'transfer' ? 'Cuando te llegue la transferencia, apúntala aquí y el cliente saldrá al día hasta la fecha que pongas.' : 'Para quien te paga en efectivo, por Bizum o por transferencia.'}</p>
       <div class="grid2">
         <label class="f">Importe (€)<input class="in" name="amount" inputmode="decimal" value="${bb.amount_cents != null ? esc(euInput(bb.amount_cents)) : ''}" required></label>
         <label class="f">Al día hasta<input class="in" name="until" type="date" value="${defUntil}" required></label>
       </div>
-      <label class="f">Concepto<input class="in" name="desc" value="Pago a mano" maxlength="80"></label>
+      <label class="f">Concepto<input class="in" name="desc" value="${payCfg().mode === 'transfer' ? 'Transferencia' : 'Pago a mano'}" maxlength="80"></label>
       <button class="btn light block" type="submit">${icon('plus')} Apuntar pago</button>
     </form>
     <div class="sec-title">Historial de pagos</div>${paymentsTable(pays, true)}`;
@@ -1683,6 +1732,12 @@ const ACT = {
     } catch(e){ toast(e.message); el.disabled = false; }
   },
   metricNew: () => go('metricNew'),
+  async payTransfer(){
+    const b = await api.billing(S.me.id).catch(() => null); if (!b) return;
+    modal(`<h2>Pago por transferencia</h2><p class="small muted" style="margin:4px 0 12px">${esc(b.plan_name)}, ${esc(priceTxt(b))}.</p>${transferHTML(b, S.me.full_name)}
+      <button class="btn light block" data-x="ok" style="margin-top:14px">Cerrar</button>`, (m, close) => m.querySelector('[data-x=ok]').onclick = close);
+  },
+  async copyIban(){ const v = ibanClean(payCfg().iban); try { await navigator.clipboard.writeText(v); toast('IBAN copiado'); } catch(e){ toast('Mantén pulsado el IBAN para copiarlo'); } },
   async planFromDoc(el){
     const d = (S.cache.docs || []).find(x => x.id === el.dataset.id); if (!d) return;
     el.disabled = true; toast('Leyendo el PDF', 15000);
@@ -1791,6 +1846,7 @@ async function boot(){
     S.unread = S.unread || {};
     if (!S.unsub){ try { S.unsub = api.subscribe(onNewMessage); } catch(e){ console.warn(e); } }
     refreshUnread();
+    await refreshSettings();
     home();
     maybeWelcome();
   } catch(e){
