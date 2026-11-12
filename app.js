@@ -86,7 +86,7 @@ const TABLES = {
   workout_plans: ['id','client_id','name','notes','days','active'],
   nutrition_plans: ['id','client_id','name','kcal','protein_g','carbs_g','fat_g','water_l','meals','guidelines','active'],
   workout_logs: ['id','client_id','plan_id','day_name','date','entries','rpe','notes'],
-  body_metrics: ['id','client_id','date','weight_kg','waist_cm','hip_cm','chest_cm','arm_cm','thigh_cm','body_fat','sleep','stress','energy','notes'],
+  body_metrics: ['id','client_id','date','weight_kg','height_cm','waist_cm','hip_cm','chest_cm','arm_cm','thigh_cm','body_fat','visceral_fat','muscle_kg','sleep','stress','energy','notes'],
   messages: ['id','client_id','sender_id','body'],
   progress_photos: ['id','client_id','date','pose','path','notes'],
   documents: ['id','client_id','name','kind','path','size_bytes'],
@@ -296,7 +296,7 @@ function seed(){
       entries: day.exercises.slice(0,3).map(e => { const base = parseFloat(e.load) || 10; return {exercise: e.name, sets: Array.from({length: +e.sets || 3}, () => ({reps: String(parseInt(e.reps) || 10), kg: String(base + prog)}))}; })});
   }
   const mets = [];
-  for (let k = 56; k >= 0; k -= 7){ const i = (56 - k) / 7; mets.push({id: uid(), client_id:'demo-ana', date: d(k), weight_kg: +(72.4 - i*0.45 + (i%2 ? .2 : 0)).toFixed(1), waist_cm: +(84 - i*0.6).toFixed(1), hip_cm: +(102 - i*0.3).toFixed(1), body_fat: +(29 - i*0.35).toFixed(1), sleep: 3 + (i%2), stress: 3, energy: 3 + (i>4?1:0), created_at: ts(k)}); }
+  for (let k = 56; k >= 0; k -= 7){ const i = (56 - k) / 7; mets.push({id: uid(), client_id:'demo-ana', date: d(k), weight_kg: +(72.4 - i*0.45 + (i%2 ? .2 : 0)).toFixed(1), waist_cm: +(84 - i*0.6).toFixed(1), hip_cm: +(102 - i*0.3).toFixed(1), body_fat: +(29 - i*0.35).toFixed(1), visceral_fat: +(7 - i*0.15).toFixed(1), muscle_kg: +(24.1 + i*0.12).toFixed(1), height_cm: i === 0 ? 165 : undefined, sleep: 3 + (i%2), stress: 3, energy: 3 + (i>4?1:0), created_at: ts(k)}); }
   for (let k = 21; k >= 0; k -= 7){ const i = (21-k)/7; mets.push({id: uid(), client_id:'demo-luis', date: d(k), weight_kg: +(74 + i*0.3).toFixed(1), created_at: ts(k)}); }
   logs.push({id: uid(), client_id:'demo-luis', plan_id:null, day_name:'Torso', date: d(9), entries:[{exercise:'Press banca', sets:[{reps:'8', kg:'60'},{reps:'8', kg:'60'}]}], created_at: ts(9)});
   const opt = (...o) => o;
@@ -882,7 +882,7 @@ function progressHTML(c, logs, mets, asCoach, photos = [], urls = {}){
   const ex = S.p.ex && exNames.includes(S.p.ex) ? S.p.ex : exNames[0];
   const exPts = ex ? logs.slice().reverse().map(l => { const e = (l.entries || []).find(x => x.exercise === ex); const b = e && bestSet(e.sets || []); return b ? {x: l.date, y: b.kg, r: b.reps} : null; }).filter(Boolean) : [];
   const metric = S.p.metric || 'weight_kg';
-  const MET = [['weight_kg','Peso','kg'],['waist_cm','Cintura','cm'],['hip_cm','Cadera','cm'],['body_fat','% grasa','%']];
+  const MET = [['weight_kg','Peso','kg'],['waist_cm','Cintura','cm'],['hip_cm','Cadera','cm'],['body_fat','% grasa','%'],['visceral_fat','Visceral',''],['muscle_kg','Músculo','kg']];
   const mPts = mets.filter(m => m[metric] != null).map(m => ({x: m.date, y: num(m[metric])}));
   return `
     ${asCoach ? '' : `<button class="btn gold block" data-act="metricNew">${icon('scale')} Registrar medidas de hoy</button>`}
@@ -892,10 +892,12 @@ function progressHTML(c, logs, mets, asCoach, photos = [], urls = {}){
       ${lineChart(mPts)}
       ${mPts.length ? `<div class="row between small"><span class="muted">Primero: ${fmtNum(mPts[0].y)}</span><b>Ahora: ${fmtNum(mPts.at(-1).y)} ${MET.find(m => m[0] === metric)[2]}</b><span class="${mPts.at(-1).y - mPts[0].y > 0 ? 'up' : 'down'}">${mPts.length > 1 ? (mPts.at(-1).y - mPts[0].y > 0 ? '+' : '') + fmtNum(mPts.at(-1).y - mPts[0].y) : ''}</span></div>` : ''}
     </div>
-    ${mets.length ? `<div class="tbl-wrap" style="margin-top:10px"><table class="tbl"><thead><tr><th>Fecha</th><th>Peso</th><th>Cint.</th><th>Cad.</th><th>Grasa</th><th>S/E/E</th><th></th></tr></thead><tbody>
-      ${mets.slice().reverse().slice(0, 12).map(m => `<tr><td>${fmtDate(m.date)}${m._pending ? ' <span class="badge warn">pendiente</span>' : ''}</td><td>${fmtNum(m.weight_kg)}</td><td>${fmtNum(m.waist_cm)}</td><td>${fmtNum(m.hip_cm)}</td><td>${fmtNum(m.body_fat)}</td><td>${[m.sleep, m.stress, m.energy].map(v => v ?? '-').join('/')}</td>
+    ${mets.length ? `<div class="tbl-wrap" style="margin-top:10px"><table class="tbl"><thead><tr><th>Fecha</th><th>Peso</th><th>Cint.</th><th>Cad.</th><th>Grasa</th><th>Visc.</th><th>Músc.</th><th>S/E/E</th><th></th></tr></thead><tbody>
+      ${mets.slice().reverse().slice(0, 12).map(m => `<tr><td>${fmtDate(m.date)}${m._pending ? ' <span class="badge warn">pendiente</span>' : ''}</td><td>${fmtNum(m.weight_kg)}</td><td>${fmtNum(m.waist_cm)}</td><td>${fmtNum(m.hip_cm)}</td><td>${fmtNum(m.body_fat)}</td><td>${fmtNum(m.visceral_fat)}</td><td>${fmtNum(m.muscle_kg)}</td><td>${[m.sleep, m.stress, m.energy].map(v => v ?? '-').join('/')}</td>
       <td>${m._pending ? '' : `<button class="mini bad" data-act="delMetric" data-id="${esc(m.id)}" aria-label="Borrar">${icon('trash')}</button>`}</td></tr>`).join('')}</tbody></table></div>
       <p class="tiny muted">S/E/E: sueño, estrés y energía del 1 al 5.</p>` : ''}
+    ${mets.length ? `<div class="sec-title">${asCoach ? 'Su cuerpo' : 'Tu cuerpo'}: inicio y ahora</div>${bodyTableHTML(mets, c)}` : ''}
+    ${weeklyHTML(logs, mets)}
     ${photosHTML(photos, urls)}
     <div class="sec-title">Fuerza</div>
     <div class="card">
@@ -906,6 +908,7 @@ function progressHTML(c, logs, mets, asCoach, photos = [], urls = {}){
     <div class="sec-title">Entrenos</div>${logsListHTML(logs.slice(0, 20), true)}`;
 }
 function mountProgress(){
+  document.querySelectorAll('.tbl.prog').forEach(t => { t.parentElement.scrollLeft = t.parentElement.scrollWidth; });
   const s = $('#exSel'); if (s) s.onchange = () => { S.p.ex = s.value; render(); };
 }
 function logsListHTML(logs, canDelete = false){
@@ -915,21 +918,132 @@ function logsListHTML(logs, canDelete = false){
       <div class="grow"><b>${esc(l.day_name || 'Entreno')}</b>${l._pending ? ' <span class="badge warn">pendiente</span>' : ''}<div class="small muted">${fmtDate(l.date, {weekday:'short', day:'numeric', month:'short'})}${l.rpe ? `, RPE ${esc(l.rpe)}` : ''}, ${fmtNum(volume(l) / 1000, 1)} t</div></div><span class="chev">›</span></summary>
       <div style="margin-top:10px" class="small">${(l.entries || []).map(e => `<div style="margin:6px 0"><b>${esc(e.exercise)}</b>: ${(e.sets || []).map(s => `${esc(s.kg || '-')} kg x ${esc(s.reps || '-')}`).join(', ')}</div>`).join('')}
       ${l.notes ? `<div class="card cream" style="margin-top:8px;padding:10px">${esc(l.notes)}</div>` : ''}
-      ${canDelete && !l._pending ? `<button class="btn sm danger" style="margin-top:8px" data-act="delLog" data-id="${esc(l.id)}">${icon('trash')} Borrar entreno</button>` : ''}</div>
+      <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="logSummary" data-id="${esc(l.id)}" data-cid="${esc(curCid())}">${icon('chart')} Ver resumen</button>
+      ${canDelete && !l._pending ? `<button class="btn sm danger" data-act="delLog" data-id="${esc(l.id)}">${icon('trash')} Borrar entreno</button>` : ''}</div></div>
     </details>`).join('')}</div>`;
 }
 
+/* ---------- Resúmenes: entreno, semana y cuerpo ---------- */
+// [campo, nombre, unidad, sentido bueno: -1 bajar, 1 subir, 0 depende del objetivo]
+const BODY = [['weight_kg','Peso','kg',0],['height_cm','Altura','cm',0],['waist_cm','Cintura','cm',-1],['hip_cm','Cadera','cm',0],
+  ['body_fat','Grasa','%',-1],['visceral_fat','Grasa visceral','',-1],['muscle_kg','Masa muscular','kg',1]];
+const weekStart = s => { const d = parseDate(s); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return d.toLocaleDateString('sv-SE'); };
+const weekLabel = ws => { const a = parseDate(ws), b = parseDate(ws); b.setDate(b.getDate() + 6);
+  return a.getMonth() === b.getMonth() ? `${a.getDate()}-${fmtDate(b.toLocaleDateString('sv-SE'))}` : `${fmtDate(ws)} - ${fmtDate(b.toLocaleDateString('sv-SE'))}`; };
+const nSets = l => (l.entries || []).reduce((a, e) => a + (e.sets || []).length, 0);
+// Mejor serie: con peso manda el 1RM estimado; sin peso, las repeticiones
+const topSet = sets => { let b = null; for (const x of sets || []){ const kg = num(x.kg), r = num(x.reps); if (kg == null && r == null) continue;
+  const sc = kg ? kg * (1 + (r || 1) / 30) : (r || 0); if (!b || sc > b.sc) b = {kg, reps: r, sc}; } return b; };
+const fmtSet = t => !t ? '-' : t.kg ? `${fmtNum(t.kg, 2)} x ${t.reps ?? '-'}` : `${t.reps}`;
+const sign = (v, d = 1) => (v > 0 ? '+' : '') + fmtNum(v, d);
+const cmpCls = (a, b) => a == null || b == null || Math.abs(a - b) < 1e-9 ? '' : a > b ? 'better' : 'worse';
+function bodySeries(mets, c, k){
+  const pts = mets.filter(m => m[k] != null && m[k] !== '').map(m => ({date: m.date, v: num(m[k])}));
+  if (!pts.length && k === 'height_cm' && c?.height_cm) pts.push({date: null, v: num(c.height_cm)});
+  return pts;
+}
+function bodyTableHTML(mets, c){
+  const rows = BODY.map(([k, l, u, dir]) => ({k, l, u, dir, pts: bodySeries(mets, c, k)})).filter(r => r.pts.length);
+  if (!rows.length) return '';
+  const firstD = mets[0]?.date, lastD = mets.at(-1)?.date;
+  return `<div class="tbl-wrap"><table class="tbl bodyt"><thead><tr><th>Medida</th><th>Inicio</th><th>Anterior</th><th>Ahora</th><th>Cambio</th></tr></thead><tbody>
+    ${rows.map(r => { const a = r.pts[0].v, z = r.pts.at(-1).v, p = r.pts.length > 1 ? r.pts.at(-2).v : null, d = r.pts.length > 1 ? z - a : null;
+      const cls = d == null || Math.abs(d) < 1e-9 || !r.dir ? '' : (d * r.dir > 0 ? 'better' : 'worse');
+      return `<tr><td><b>${r.l}</b>${r.u ? ` <span class="muted tiny">${r.u}</span>` : ''}</td><td>${fmtNum(a)}</td><td>${fmtNum(p)}</td><td><b>${fmtNum(z)}</b></td><td class="${cls}">${d == null ? '-' : sign(d)}</td></tr>`; }).join('')}
+  </tbody></table></div>
+  <p class="tiny muted">${firstD && lastD && firstD !== lastD ? `Inicio: ${fmtDate(firstD, {day:'numeric', month:'short', year:'numeric'})}. Última medición: ${fmtDate(lastD, {day:'numeric', month:'short', year:'numeric'})}. ` : ''}En verde lo que va en buena dirección. Peso, altura y cadera van sin color porque depende del objetivo.</p>`;
+}
+function weeklyHTML(logs, mets){
+  if (!logs.length) return '';
+  const by = {};
+  logs.forEach(l => { const w = weekStart(l.date); (by[w] = by[w] || []).push(l); });
+  const weeks = Object.keys(by).sort().reverse().slice(0, 8);
+  const wOf = w => { const ls = by[w] || []; return {n: ls.length, sets: ls.reduce((a, l) => a + nSets(l), 0), vol: ls.reduce((a, l) => a + volume(l), 0)}; };
+  const weightIn = w => { const e = new Date(parseDate(w)); e.setDate(e.getDate() + 6); const ee = e.toLocaleDateString('sv-SE');
+    return [...mets].reverse().find(m => m.date >= w && m.date <= ee && m.weight_kg != null)?.weight_kg; };
+  const rows = weeks.map((w, i) => { const cur = wOf(w), prevKey = Object.keys(by).sort().reverse()[Object.keys(by).sort().reverse().indexOf(w) + 1];
+    const prev = prevKey ? wOf(prevKey) : null; const dv = prev && prev.vol ? (cur.vol - prev.vol) / prev.vol * 100 : null;
+    const live = w === weekStart(today());
+    return `<tr><td class="wk"><b>${weekLabel(w)}</b></td><td>${cur.n}</td><td>${cur.sets}</td><td>${fmtNum(cur.vol / 1000, 1)} t</td>
+      <td class="${live || dv == null ? '' : dv > 0.5 ? 'better' : dv < -0.5 ? 'worse' : ''}">${live ? '<span class="muted">en curso</span>' : dv == null ? '-' : sign(dv, 0) + ' %'}</td><td>${fmtNum(num(weightIn(w)))}</td></tr>`; }).join('');
+  // Progresión por ejercicio: mejor serie de cada semana (las 6 últimas semanas con entrenos)
+  const cols = Object.keys(by).sort().slice(-6);
+  const exs = [...new Set(cols.flatMap(w => by[w].flatMap(l => (l.entries || []).map(e => e.exercise))).filter(Boolean))];
+  const cell = (w, ex) => topSet(by[w].flatMap(l => (l.entries || []).filter(e => e.exercise === ex).flatMap(e => e.sets || [])));
+  const grid = exs.map(ex => { let prev = null;
+    return `<tr><td class="ex"><b>${esc(ex)}</b></td>${cols.map(w => { const t = cell(w, ex); const cls = t && prev ? cmpCls(t.sc, prev.sc) : ''; if (t) prev = t;
+      return `<td class="${cls}">${t ? fmtSet(t) : '<span class="muted">-</span>'}</td>`; }).join('')}</tr>`; }).join('');
+  return `<div class="sec-title">Resumen semanal</div>
+    <div class="tbl-wrap"><table class="tbl wkt"><thead><tr><th>Semana</th><th>Entrenos</th><th>Series</th><th>Volumen</th><th>Vs. anterior</th><th>Peso</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="tiny muted">Volumen: kilos totales levantados (kg x repeticiones de todas las series). La semana actual se compara cuando termina.</p>
+    <div class="sec-title">Progresión por ejercicio</div>
+    <div class="tbl-wrap"><table class="tbl prog"><thead><tr><th>Ejercicio</th>${cols.map(w => `<th>${fmtDate(w)}</th>`).join('')}</tr></thead><tbody>${grid}</tbody></table></div>
+    <p class="tiny muted">Mejor serie de cada semana (kg x repeticiones). En verde si mejora a la semana anterior, en rojo si baja.</p>`;
+}
+
+VIEWS.logSummary = async () => {
+  const coach = S.me.role === 'coach', cid = S.p.cid || S.me.id;
+  const d = coach ? await loadClient(cid) : {...await myData(), c: S.me};
+  const {logs, mets, c} = d;
+  const i = logs.findIndex(l => l.id === S.p.id), log = logs[i];
+  if (!log) return shell('Resumen', empty('No encuentro este entreno', 'Puede que se haya borrado.'), {backBtn: true});
+  const older = logs.slice(i + 1);
+  const prevSame = older.find(l => l.day_name === log.day_name);
+  const vol = volume(log), pvol = prevSame ? volume(prevSame) : null, dvol = pvol ? (vol - pvol) / pvol * 100 : null;
+  let better = 0, records = 0;
+  const exRows = (log.entries || []).map(e => {
+    const t = topSet(e.sets);
+    const prevE = older.find(l => (l.entries || []).some(x => x.exercise === e.exercise && topSet(x.sets)));
+    const p = prevE ? topSet(prevE.entries.find(x => x.exercise === e.exercise).sets) : null;
+    const best = older.reduce((m, l) => { (l.entries || []).filter(x => x.exercise === e.exercise).forEach(x => { const s = topSet(x.sets); if (s && (!m || s.sc > m.sc)) m = s; }); return m; }, null);
+    const isPR = t && best && t.sc > best.sc + 1e-9;
+    const cls = t && p ? cmpCls(t.sc, p.sc) : '';
+    if (cls === 'better') better++; if (isPR) records++;
+    const txt = !p ? 'Primera vez' : cls === 'better' ? 'Mejor que la última vez' : cls === 'worse' ? 'Por debajo de la última vez' : 'Igual que la última vez';
+    return `<div class="exr"><div class="grow"><b>${esc(e.exercise)}</b>${isPR ? ' <span class="badge gold">Récord</span>' : ''}
+        <div class="small muted">${(e.sets || []).map(x => x.kg ? `${esc(x.kg)} x ${esc(x.reps || '-')}` : esc(x.reps || '-')).join(', ')}</div>
+        <div class="small"><span class="${cls}">${txt}</span>${p ? `<span class="muted">. Antes: ${fmtSet(p)} (${relDate(prevE.date)})</span>` : ''}</div></div>
+      <div class="exr-top"><small>Mejor serie</small><b>${fmtSet(t)}</b></div></div>`;
+  }).join('');
+  const wk = weekStart(log.date), wLogs = logs.filter(l => weekStart(l.date) === wk);
+  const metsThisWeek = mets.some(m => weekStart(m.date) === weekStart(today()));
+  const who = coach ? firstName(c.full_name) : '';
+  return shell('Resumen del entreno', `
+    <div class="sum-head"><b>${esc(log.day_name || 'Entreno')}</b><span>${esc(cap(fmtDate(log.date, {weekday:'long', day:'numeric', month:'long'})))}${log.rpe ? `. Esfuerzo ${esc(log.rpe)} de 10` : ''}</span></div>
+    <div class="stats">
+      <div class="stat"><small>Series hechas</small><b>${nSets(log)}</b></div>
+      <div class="stat"><small>Volumen</small><b>${fmtNum(vol / 1000, 1)}</b><i>t</i>${dvol != null ? `<i class="${dvol >= 0 ? 'down' : 'up'}">${sign(dvol, 0)} %</i>` : ''}</div>
+      <div class="stat"><small>Ejercicios que mejoran</small><b>${better}</b><i>de ${(log.entries || []).length}</i></div>
+    </div>
+    <p class="small" style="margin:12px 2px 0">${records ? `${coach ? `${esc(who)} ha batido` : 'Has batido'} ${records === 1 ? 'un récord' : `${records} récords`} hoy. ` : ''}${dvol == null ? (prevSame ? '' : 'Es la primera vez que se registra este día, así que hoy marca el punto de partida.') : `${coach ? 'Ha' : 'Has'} movido un ${fmtNum(Math.abs(dvol), 0)} % ${dvol >= 0 ? 'más' : 'menos'} de kilos que la última vez que ${coach ? 'hizo' : 'hiciste'} este día.`} Esta semana ${coach ? 'lleva' : 'llevas'} ${wLogs.length} ${wLogs.length === 1 ? 'entreno' : 'entrenos'}.</p>
+    ${log.notes ? `<div class="card cream" style="margin-top:10px;padding:10px 12px">${esc(log.notes)}</div>` : ''}
+    <div class="sec-title">Ejercicio a ejercicio</div>
+    <div class="card flush">${exRows}</div>
+    <div class="sec-title">${coach ? 'Su cuerpo' : 'Tu cuerpo'}: inicio y ahora</div>
+    ${bodyTableHTML(mets, c) || `<div class="card"><p class="muted small center" style="margin:0">Todavía no hay medidas registradas.</p></div>`}
+    ${!coach && !metsThisWeek ? `<button class="btn gold block" style="margin-top:12px" data-act="metricNew">${icon('scale')} Registrar medidas de esta semana</button>` : ''}
+    <button class="btn light block" style="margin-top:12px" data-act="${coach ? 'back' : 'home'}">${coach ? 'Volver' : 'Terminar'}</button>`, {backBtn: true, sub: coach ? c.full_name : CFG.BRAND});
+};
+
 /* ---------- Registrar medidas (cliente) ---------- */
 VIEWS.metricNew = async () => {
-  if (!S.draft) S.draft = {id: uid(), client_id: S.me.id, date: today(), weight_kg:'', waist_cm:'', hip_cm:'', chest_cm:'', arm_cm:'', thigh_cm:'', body_fat:'', sleep:null, stress:null, energy:null, notes:''};
+  if (!S.draft){
+    const {mets} = await myData();
+    const lastH = [...mets].reverse().find(x => x.height_cm != null)?.height_cm ?? S.me.height_cm ?? '';
+    S.draft = {id: uid(), client_id: S.me.id, date: today(), weight_kg:'', height_cm: lastH == null ? '' : String(lastH), waist_cm:'', hip_cm:'', chest_cm:'', arm_cm:'', thigh_cm:'', body_fat:'', visceral_fat:'', muscle_kg:'', sleep:null, stress:null, energy:null, notes:''};
+  }
   const m = S.draft;
   const scale = (k, l) => `<div><div class="small muted" style="margin-bottom:6px">${l}</div><div class="scale">${[1,2,3,4,5].map(v => `<button class="${m[k] === v ? 'on' : ''}" data-act="mscale" data-k="${k}" data-v="${v}">${v}</button>`).join('')}</div></div>`;
-  const f = (k, l, u) => `<label class="f">${l} (${u})<input class="in" inputmode="decimal" data-path="${k}" value="${esc(m[k])}"></label>`;
+  const f = (k, l, u) => `<label class="f">${l}${u ? ` (${u})` : ''}<input class="in" inputmode="decimal" data-path="${k}" value="${esc(m[k])}"></label>`;
   return shell('Medidas', `
     <div class="stack">
       <label class="f">Fecha<input class="in" type="date" data-path="date" value="${esc(m.date)}"></label>
-      <div class="grid2">${f('weight_kg','Peso','kg')}${f('body_fat','Grasa','%')}</div>
+      <div class="grid2">${f('weight_kg','Peso','kg')}${f('height_cm','Altura','cm')}</div>
       <div class="grid2">${f('waist_cm','Cintura','cm')}${f('hip_cm','Cadera','cm')}</div>
+      <div class="form-h">Báscula de bioimpedancia</div>
+      <div class="grid3">${f('body_fat','Grasa','%')}${f('visceral_fat','Visceral','nivel')}${f('muscle_kg','Músculo','kg')}</div>
+      <p class="tiny muted" style="margin:-4px 0 0">Si tu báscula no da alguno de estos datos, déjalo en blanco.</p>
+      <div class="form-h">Otros perímetros</div>
       <div class="grid3">${f('chest_cm','Pecho','cm')}${f('arm_cm','Brazo','cm')}${f('thigh_cm','Muslo','cm')}</div>
       <div class="card stack">${scale('sleep','Sueño: 1 fatal, 5 genial')}${scale('stress','Estrés: 1 nada, 5 mucho')}${scale('energy','Energía: 1 sin fuerzas, 5 a tope')}</div>
       <label class="f">Notas<textarea class="in" data-path="notes" placeholder="Cómo te has visto esta semana">${esc(m.notes)}</textarea></label>
@@ -1328,14 +1442,16 @@ const ACT = {
     try {
       const r = await saveOrQueue('log', {id: s.id, client_id: s.client_id, plan_id: s.plan_id, day_name: s.day_name, date: s.date, entries, rpe: s.rpe, notes: s.notes});
       toast(r._pending ? 'Guardado en el móvil. Se enviará al volver la conexión.' : '¡Entreno guardado! Buen trabajo', 3000);
-      S.stack = []; go('train', {}, false);
+      S.stack = []; S.view = 'train'; S.p = {}; go('logSummary', {id: s.id});
     } catch(e){ toast(e.message); el.disabled = false; }
   },
   metricNew: () => go('metricNew'),
+  logSummary: el => go('logSummary', {id: el.dataset.id, cid: el.dataset.cid}),
   mscale: el => { S.draft[el.dataset.k] = +el.dataset.v; el.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === el)); },
   async metricSave(el){
-    const m = {...S.draft}; ['weight_kg','waist_cm','hip_cm','chest_cm','arm_cm','thigh_cm','body_fat'].forEach(k => m[k] = num(m[k]));
-    if (['weight_kg','waist_cm','hip_cm','body_fat','sleep'].every(k => m[k] == null)) return toast('Apunta al menos una medida');
+    const m = {...S.draft}; ['weight_kg','height_cm','waist_cm','hip_cm','chest_cm','arm_cm','thigh_cm','body_fat','visceral_fat','muscle_kg'].forEach(k => m[k] = num(m[k]));
+    if (['weight_kg','waist_cm','hip_cm','body_fat','visceral_fat','muscle_kg','sleep'].every(k => m[k] == null)) return toast('Apunta al menos una medida');
+    if (m.height_cm != null && num(S.me.height_cm) !== m.height_cm) api.updateProfile(S.me.id, {height_cm: m.height_cm}, false).then(p => { if (p) S.me = p; }).catch(() => {});
     el.disabled = true;
     try { const r = await saveOrQueue('metric', m); toast(r._pending ? 'Guardado en el móvil. Se enviará al volver la conexión.' : 'Medidas guardadas'); S.stack = []; go('progress', {}, false); }
     catch(e){ toast(e.message); el.disabled = false; }
