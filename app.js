@@ -74,7 +74,36 @@ const I = {
   upload:'<path d="M12 16V4M7 9l5-5 5 5M5 20h14"/>',
   card:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/>',
   ext:'<path d="M14 4h6v6M20 4l-9 9M18 14v6H4V6h6"/>',
+  heart:'<path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.3a4.3 4.3 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z"/>',
 };
+/* ---------- Salud del iPhone: datos que se pueden compartir ---------- */
+const HEALTH_CONSENT_V = '2026-11-22';
+const HM = [
+  {k:'steps', l:'Pasos', s:'Pasos', u:'', d:0, desc:'pasos del día'},
+  {k:'sleep_h', l:'Sueño', s:'Sueño', u:'', d:1, desc:'lo que dormiste la noche anterior'},
+  {k:'resting_hr', l:'FC en reposo', s:'FC', u:'lpm', d:0, desc:'pulsaciones en reposo'},
+  {k:'hrv_ms', l:'VFC', s:'VFC', u:'ms', d:0, desc:'variabilidad cardiaca (recuperación)'},
+  {k:'active_kcal', l:'Calorías activas', s:'kcal', u:'kcal', d:0, desc:'energía gastada al moverte'},
+  {k:'weight_kg', l:'Peso', s:'Peso', u:'kg', d:1, desc:'si tienes báscula conectada a Salud'},
+];
+const hmOf = k => HM.find(m => m.k === k);
+const fmtSleep = h => { if (h == null) return '-'; const m = Math.round(h * 60); return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`; };
+const fmtH = (k, v) => v == null ? '-' : k === 'sleep_h' ? fmtSleep(v) : fmtNum(v, hmOf(k).d);
+const newToken = () => Array.from(crypto.getRandomValues(new Uint8Array(18)), b => b.toString(16).padStart(2, '0')).join('');
+const isoDaysAgo = n => { const x = new Date(); x.setDate(x.getDate() - n); x.setMinutes(x.getMinutes() - x.getTimezoneOffset()); return x.toISOString().slice(0, 10); };
+const ago = iso => { if (!iso) return 'todavía nada'; const s = (Date.now() - new Date(iso)) / 1000; if (s < 90) return 'hace un momento'; if (s < 3600) return `hace ${Math.round(s / 60)} min`; if (s < 86400) return `hace ${Math.round(s / 3600)} h`; return relDate(new Date(iso).toLocaleDateString('sv-SE')); };
+function seedHealth(){
+  const days = [];
+  for (let k = 29; k >= 0; k--){
+    const w = k % 7, r = Math.sin(k * 1.7);
+    days.push({client_id:'demo-ana', day: isoDaysAgo(k), steps: k === 0 ? 6240 : Math.round(8200 + r * 2600 + (w === 0 ? -3000 : 0)), sleep_h: k === 0 ? 6.1 : +(7.2 + Math.sin(k * 2.3) * .8).toFixed(2),
+      resting_hr: k === 0 ? 63 : Math.round(57 + Math.sin(k * .9) * 2), hrv_ms: k === 0 ? 38 : Math.round(52 + Math.sin(k * 1.3) * 7), active_kcal: k === 0 ? 310 : Math.round(480 + r * 140),
+      weight_kg: k % 3 === 0 ? +(69.9 - (29 - k) * .03).toFixed(1) : null, updated_at: new Date(Date.now() - k * 864e5).toISOString()});
+  }
+  return {links: [{client_id:'demo-ana', token: 'demo' + '0'.repeat(28), metrics: HM.map(m => m.k), consent_version: HEALTH_CONSENT_V, consented_at: new Date(Date.now() - 30 * 864e5).toISOString(),
+    last_sync_at: new Date(Date.now() - 40 * 60e3).toISOString(), last_payload: {steps: 6240, sueno: 366, fc_reposo: 63, vfc: 38, calorias: 310, peso: ''}}], days};
+}
+
 const icon = (n, fill) => `<svg viewBox="0 0 24 24" fill="${fill ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${I[n]}</svg>`;
 
 const EXERCISES = ['Sentadilla','Sentadilla frontal','Sentadilla búlgara','Prensa de piernas','Peso muerto','Peso muerto rumano','Hip thrust','Puente de glúteo','Zancadas','Step up','Extensión de cuádriceps','Curl femoral tumbado','Curl femoral sentado','Elevación de gemelos','Press banca','Press banca inclinado','Press con mancuernas','Fondos','Flexiones','Aperturas','Press militar','Press de hombro con mancuernas','Elevaciones laterales','Pájaros','Face pull','Dominadas','Jalón al pecho','Remo con barra','Remo con mancuerna','Remo en polea','Pullover','Curl de bíceps','Curl martillo','Extensión de tríceps en polea','Press francés','Plancha','Plancha lateral','Rueda abdominal','Crunch en polea','Pallof press','Kettlebell swing','Farmer walk','Remo ergómetro','Bici','Cinta'];
@@ -167,6 +196,22 @@ function SupabaseAPI(){
     payments: cid => sb.from('payments').select('*').eq('client_id', cid).order('paid_at', {ascending:false}).limit(100).then(ok),
     addManualPayment: row => sb.from('payments').insert({...pick(row, TABLES.payments), method: 'manual'}).select().single().then(ok),
     deletePayment: id => del('payments', id),
+    // Salud del iPhone
+    healthLink: cid => sb.from('health_links').select('*').eq('client_id', cid).maybeSingle().then(ok),
+    async healthConnect(cid, metrics){ return ok(await sb.from('health_links').insert({client_id: cid, token: newToken(), metrics, consent_version: HEALTH_CONSENT_V}).select().single()); },
+    healthSetMetrics: (cid, metrics) => sb.from('health_links').update({metrics}).eq('client_id', cid).select().single().then(ok),
+    async healthDisconnect(cid, wipe){ ok(await sb.from('health_links').delete().eq('client_id', cid)); if (wipe) ok(await sb.from('health_daily').delete().eq('client_id', cid)); },
+    healthDays: (cid, n = 60) => sb.from('health_daily').select('*').eq('client_id', cid).gte('day', isoDaysAgo(n)).order('day', {ascending: true}).then(ok),
+    async healthOverview(){
+      const [links, days] = await Promise.all([sb.from('health_links').select('client_id,last_sync_at').then(ok), sb.from('health_daily').select('client_id,day,steps,sleep_h').gte('day', isoDaysAgo(1)).then(ok)]);
+      return {links, days};
+    },
+    subscribeHealth(cid, cb){
+      const ch = sb.channel('salud-' + cid + '-' + Date.now())
+        .on('postgres_changes', {event: '*', schema: 'public', table: 'health_daily', filter: `client_id=eq.${cid}`}, () => cb())
+        .on('postgres_changes', {event: '*', schema: 'public', table: 'health_links', filter: `client_id=eq.${cid}`}, () => cb()).subscribe();
+      return () => sb.removeChannel(ch);
+    },
     async checkout(){ const {data, error} = await sb.functions.invoke('create-checkout', {body: {}}); if (error) throw await fnError(error); return data; },
     async portal(){ const {data, error} = await sb.functions.invoke('customer-portal', {body: {}}); if (error) throw await fnError(error); return data; },
   };
@@ -182,6 +227,9 @@ function DemoAPI(){
   let mem = null;
   let db = load();
   ['messages','progress_photos','documents','billing','payments'].forEach(k => { if (!db[k]) db[k] = []; });
+  if (!db.health_links){ const h = seedHealth(); db.health_links = h.links; db.health_daily = h.days; }
+  let hlisteners = [];
+  const hl = cid => setTimeout(() => hlisteners.forEach(f => f(cid)), 30);
   let listeners = [];
   const files = {};
   const putFile = async (path, blob) => {
@@ -269,6 +317,21 @@ function DemoAPI(){
       save(); return {demo: true};
     },
     async portal(){ return {demo: true}; },
+    healthLink: cid => wait(db.health_links.find(x => x.client_id === cid) || null),
+    async healthConnect(cid, metrics){ db.health_links = db.health_links.filter(x => x.client_id !== cid); const r = {client_id: cid, token: newToken(), metrics, consent_version: HEALTH_CONSENT_V, consented_at: now(), last_sync_at: null, last_payload: null}; db.health_links.push(r); save(); hl(cid); return wait(r); },
+    async healthSetMetrics(cid, metrics){ const r = db.health_links.find(x => x.client_id === cid); r.metrics = metrics; save(); hl(cid); return wait(r); },
+    async healthDisconnect(cid, wipe){ db.health_links = db.health_links.filter(x => x.client_id !== cid); if (wipe) db.health_daily = db.health_daily.filter(x => x.client_id !== cid); save(); hl(cid); },
+    healthDays: (cid, n = 60) => wait(db.health_daily.filter(x => x.client_id === cid && x.day >= isoDaysAgo(n)).sort((a, b) => a.day.localeCompare(b.day))),
+    healthOverview: () => wait({links: db.health_links, days: db.health_daily.filter(x => x.day >= isoDaysAgo(1))}),
+    subscribeHealth(cid, cb){ const f = id => { if (id === cid) cb(); }; hlisteners.push(f); return () => { hlisteners = hlisteners.filter(x => x !== f); }; },
+    async demoHealthSend(cid){
+      const link = db.health_links.find(x => x.client_id === cid); if (!link) return;
+      const h = new Date().getHours(), all = {steps: Math.round(600 * h + Math.random() * 900), sleep_h: +(6.3 + Math.random() * 1.8).toFixed(2), resting_hr: 55 + Math.round(Math.random() * 6), hrv_ms: 42 + Math.round(Math.random() * 18), active_kcal: Math.round(25 * h + Math.random() * 80), weight_kg: null};
+      let r = db.health_daily.find(x => x.client_id === cid && x.day === today()); if (!r){ r = {client_id: cid, day: today()}; db.health_daily.push(r); }
+      link.metrics.forEach(k => { if (all[k] != null) r[k] = all[k]; }); r.updated_at = now();
+      link.last_sync_at = now(); link.last_payload = {pasos: all.steps, sueno: Math.round(all.sleep_h * 60) + ' min', fc_reposo: all.resting_hr, vfc: all.hrv_ms, calorias: all.active_kcal, peso: ''};
+      save(); hl(cid);
+    },
   };
 }
 
@@ -378,6 +441,7 @@ window.addEventListener('popstate', () => { if (S.stack.length) back(); });
 let renderSeq = 0;
 async function render(){
   const seq = ++renderSeq;
+  if (S.cleanup){ try { S.cleanup(); } catch(e){} S.cleanup = null; }
   const V = VIEWS[S.view] || VIEWS.loading;
   let html;
   try { html = await V(); }
@@ -526,7 +590,8 @@ VIEWS.pending = async () => authWrap(`<h1>Hola, ${esc(firstName(S.me?.full_name)
    COACH
    ===================================================================== */
 VIEWS.clients = async () => {
-  const [clients, act, bills] = await Promise.all([api.clients(), api.activity(), api.allBilling().catch(() => [])]);
+  const [clients, act, bills, hov] = await Promise.all([api.clients(), api.activity(), api.allBilling().catch(() => []), api.healthOverview().catch(() => ({links: [], days: []}))]);
+  const hToday = {}; hov.days.filter(d => d.day === today()).forEach(d => { hToday[d.client_id] = d; });
   const billOf = {}; bills.forEach(b => { billOf[b.client_id] = b; });
   const lastLog = {}, lastW = {};
   act.logs.forEach(l => { if (!lastLog[l.client_id] || l.date > lastLog[l.client_id]) lastLog[l.client_id] = l.date; });
@@ -542,7 +607,7 @@ VIEWS.clients = async () => {
     return `<div class="card tap item ${c.status === 'pending' ? 'pend' : (late || ps.k === 'late') ? 'late' : ''}" data-act="openClient" data-id="${esc(c.id)}">
       <div class="avatar">${esc(initials(c.full_name))}</div>
       <div class="grow"><b>${esc(c.full_name || c.email)}</b>
-        <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}</div></div>
+        <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}${hToday[c.id]?.steps != null ? `<span class="hmini">${icon('heart')} ${fmtNum(hToday[c.id].steps, 0)} pasos hoy</span>` : ''}</div></div>
       <span class="cnt hidden" data-badge="${esc(c.id)}" title="Mensajes sin leer"></span>
       ${c.status === 'pending' ? `<button class="btn sm gold" data-act="activate" data-id="${esc(c.id)}">Activar</button>` : c.status === 'active' && ps.k !== 'none' ? `<span class="badge ${ps.cls}">${esc(ps.short)}</span>` : statusBadge(c.status)}
       <span class="chev">›</span></div>`;
@@ -614,6 +679,12 @@ VIEWS.coachProfile = async () => { const wt = await welcomeText(); await refresh
     <p class="tiny muted" style="margin:-4px 0 0">{nombre} se cambia por el nombre y apellidos de cada cliente. Con transferencia, tus clientes ven estos datos en lugar del botón de pagar con tarjeta, y tú apuntas cada pago en Pagos, en Pago a mano.</p>
     <button class="btn" type="submit">${icon('check')} Guardar</button>
   </form>
+  <div class="sec-title">Salud del iPhone</div>
+  <form class="card stack" id="fHealthUrl">
+    <label class="f">Enlace de iCloud del atajo JPR Salud<input class="in" name="url" type="url" value="${esc((S.settings || {}).health_shortcut_url || '')}" placeholder="https://www.icloud.com/shortcuts/..." autocomplete="off" spellcheck="false"></label>
+    <p class="tiny muted" style="margin:-4px 0 0">Tus clientes lo instalan desde Perfil › Salud del iPhone, después de dar su permiso. Tú ves sus datos en la pestaña Salud de cada ficha.</p>
+    <button class="btn" type="submit">${icon('check')} Guardar</button>
+  </form>
   <div class="sec-title">Mensaje de bienvenida</div>
   <form class="card stack" id="fWelcome">
     <label class="f">Cuándo sale<select class="in" name="mode">
@@ -645,6 +716,12 @@ VIEWS.coachProfile.mount = () => {
     } catch(err){ toast(err.message); }
     b.disabled = false;
   };
+  const fh = $('#fHealthUrl');
+  if (fh) fh.onsubmit = async e => {
+    e.preventDefault(); const u = fh.url.value.trim();
+    if (u && !/^https:\/\/(www\.)?icloud\.com\/shortcuts\//i.test(u)) return toast('Pega el enlace que da Atajos al compartir: empieza por https://www.icloud.com/shortcuts/', 4500);
+    try { await api.saveSetting('health_shortcut_url', u); await refreshSettings(); toast('Enlace del atajo guardado'); } catch(err){ toast(err.message); }
+  };
   const f = $('#fWelcome'); if (!f) return;
   f.onsubmit = async e => {
     e.preventDefault(); const b = f.querySelector('[type=submit]'); b.disabled = true;
@@ -665,9 +742,10 @@ async function loadClient(id){
 VIEWS.client = async () => {
   const tab = S.p.tab || 'summary';
   const {c, plans, nuts, logs, mets} = await loadClient(S.p.id);
-  const tabs = [['summary','Resumen'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['chat','Mensajes'],['pay','Pagos'],['info','Ficha']];
+  const tabs = [['summary','Resumen'],['health','Salud'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['chat','Mensajes'],['pay','Pagos'],['info','Ficha']];
   let body = '';
-  if (tab === 'summary') body = summaryHTML(c, plans, nuts, logs, mets);
+  if (tab === 'summary'){ const h = await healthData(c.id); body = summaryHTML(c, plans, nuts, logs, mets) + healthSummaryHTML(h.link, h.days); }
+  if (tab === 'health'){ const h = await healthData(c.id); body = healthCoachHTML(c, h.link, h.days); }
   if (tab === 'train' || tab === 'food'){
     const docs = await api.docs(c.id).catch(() => []); const urls = await api.fileUrls(docs.map(d => d.path)).catch(() => ({}));
     S.cache.docs = docs;
@@ -759,6 +837,7 @@ VIEWS.client.mount = () => {
   mountProgress();
   if (S.p.tab === 'chat') mountChat(S.p.id);
   if (S.p.tab === 'pay') mountCoachPay(S.p.id);
+  if (S.p.tab === 'health') mountHealthLive(S.p.id, true);
 };
 
 /* ---------- Importar plan desde PDF: reglas de lectura ---------- */
@@ -1307,11 +1386,12 @@ VIEWS.metricNew.mount = bindDraft;
 /* ---------- Perfil (cliente) ---------- */
 VIEWS.profile = async () => {
   const c = S.me;
-  const [bill, pays] = await Promise.all([api.billing(c.id).catch(() => null), api.payments(c.id).catch(() => [])]);
+  const [bill, pays, hlink] = await Promise.all([api.billing(c.id).catch(() => null), api.payments(c.id).catch(() => []), api.healthLink(c.id).catch(() => null)]);
   return shell('Perfil', `
     <div class="card item"><div class="avatar lg">${esc(initials(c.full_name))}</div><div><h2>${esc(c.full_name)}</h2><div class="muted small">${esc(c.email || '')}</div></div></div>
     ${c.goal ? `<div class="card cream" style="margin-top:10px"><div class="small muted">Tu objetivo</div><b>${esc(c.goal)}</b></div>` : ''}
     ${clientPayHTML(bill, pays)}
+    ${healthCardHTML(hlink)}
     <div class="sec-title">Tus datos</div>
     <form class="stack" id="fMe">
       <label class="f">Nombre y apellidos<input class="in" name="full_name" value="${esc(c.full_name)}"></label>
@@ -1369,6 +1449,7 @@ function mountChat(cid){
   window.scrollTo(0, document.body.scrollHeight);
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; };
   ta.addEventListener('input', grow);
+  if (S.p.prefill){ ta.value = S.p.prefill; S.p.prefill = null; grow(); ta.focus(); }
   f.onsubmit = async e => {
     e.preventDefault();
     const body = ta.value.trim(); if (!body) return;
@@ -1647,6 +1728,162 @@ function mountCoachPay(cid){
    Acciones (delegación de eventos)
    ===================================================================== */
 const reorder = (arr, i, dir) => { const j = i + dir; if (j < 0 || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; };
+/* =====================================================================
+   Salud del iPhone (atajo JPR Salud)
+   ===================================================================== */
+const coachFirst = () => esc(firstName(CFG.COACH_NAME) || 'tu coach');
+async function healthData(cid){
+  const [link, days] = await Promise.all([api.healthLink(cid).catch(() => null), api.healthDays(cid, 60).catch(() => [])]);
+  S.cache.health = {link, days}; return S.cache.health;
+}
+function healthCardHTML(link){
+  return `<div class="sec-title">Salud del iPhone</div>
+  <div class="card tap item" data-act="openHealth"><span class="mini ic-health">${icon('heart')}</span>
+    <div class="grow"><b>${link ? 'Conectado con Salud' : 'Conectar con Salud'}</b><div class="small muted">${link ? `Último envío: ${esc(ago(link.last_sync_at))}` : `Comparte tus pasos, tu sueño y tus pulsaciones con ${coachFirst()}`}</div></div><span class="chev">›</span></div>`;
+}
+// Lo que se lee de un vistazo: hoy (o el último día con datos), media de 7 días y avisos
+function healthBoxHTML(link, days, asCoach){
+  const ms = HM.filter(m => (link.metrics || []).includes(m.k));
+  if (!ms.length) return empty('Nada que mostrar', 'No hay ningún dato marcado para compartir.');
+  const fresh = link.last_sync_at && Date.now() - new Date(link.last_sync_at) < 36 * 3600e3;
+  const latest = k => { for (let i = days.length - 1; i >= 0; i--) if (days[i][k] != null) return days[i]; return null; };
+  const avg7 = (k, skipDay) => { const v = days.filter(d => d.day !== skipDay && daysAgo(d.day) <= 7 && d[k] != null).map(d => d[k]); return v.length >= 2 ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  const tiles = ms.map(m => {
+    const L = latest(m.k), a = L ? avg7(m.k, L.day) : null;
+    const when = !L ? '' : L.day === today() ? 'hoy' : relDate(L.day);
+    let cmp = '';
+    if (L && a != null && m.k !== 'weight_kg'){
+      const diff = L[m.k] - a, pct = a ? Math.round(diff / a * 100) : 0;
+      const bad = (m.k === 'resting_hr' ? diff >= 5 : m.k === 'sleep_h' ? diff <= -0.75 : m.k === 'hrv_ms' ? pct <= -15 : false);
+      cmp = `<div class="cmp ${bad ? 'up' : ''}">Media: ${fmtH(m.k, a)}${m.k === 'steps' && L.day === today() ? '' : Math.abs(pct) >= 3 ? ` (${pct > 0 ? '+' : ''}${pct} %)` : ''}</div>`;
+    }
+    return `<button class="htile ${S.p.hm === m.k ? 'on' : ''}" data-act="hMetric" data-v="${m.k}"><small>${m.l}${when ? ` · ${when}` : ''}</small><b>${L ? fmtH(m.k, L[m.k]) : '-'}${L && m.u ? `<i>${m.u}</i>` : ''}</b>${cmp || '<div class="cmp">&nbsp;</div>'}</button>`;
+  }).join('');
+  // Señales para el coach (o para el propio cliente)
+  const sig = [];
+  const sl = days.filter(d => daysAgo(d.day) <= 7 && d.sleep_h != null).map(d => d.sleep_h);
+  if (ms.some(m => m.k === 'sleep_h') && sl.length >= 3){ const a = sl.reduce((x, y) => x + y, 0) / sl.length; if (a < 6.5) sig.push(`Duerme poco esta semana: ${fmtSleep(a)} de media.`); }
+  const hr = latest('resting_hr'), hrA = hr ? avg7('resting_hr', hr.day) : null;
+  if (ms.some(m => m.k === 'resting_hr') && hr && hrA != null && hr.resting_hr - hrA >= 5) sig.push(`Pulsaciones en reposo ${fmtNum(hr.resting_hr - hrA, 0)} por encima de su media: puede ir cargado o estar incubando algo.`);
+  const hv = latest('hrv_ms'), hvA = hv ? avg7('hrv_ms', hv.day) : null;
+  if (ms.some(m => m.k === 'hrv_ms') && hv && hvA && (hv.hrv_ms - hvA) / hvA <= -0.15) sig.push('VFC bastante por debajo de su media: recuperación baja.');
+  const st = days.filter(d => daysAgo(d.day) >= 1 && daysAgo(d.day) <= 7 && d.steps != null).map(d => d.steps);
+  if (ms.some(m => m.k === 'steps') && st.length >= 3 && st.reduce((x, y) => x + y, 0) / st.length < 5000) sig.push('Se mueve poco: menos de 5.000 pasos de media.');
+  const sigTxt = asCoach ? sig : sig.map(s => s.replace('Duerme', 'Duermes').replace('su media', 'tu media').replace('Se mueve', 'Te mueves').replace('puede ir', 'puedes ir'));
+  const m = ms.find(x => x.k === S.p.hm) || ms[0];
+  const pts = days.filter(d => daysAgo(d.day) <= 30 && d[m.k] != null).map(d => ({x: d.day, y: +d[m.k]}));
+  const week = days.filter(d => daysAgo(d.day) <= 6).slice().reverse();
+  return `
+    ${asCoach ? `<div class="card row between" style="gap:10px"><div><b><span class="live ${fresh ? '' : 'off'}"></span>${fresh ? 'Recibiendo datos' : link.last_sync_at ? 'Sin datos recientes' : 'Esperando el primer envío'}</b>
+      <div class="small muted">Último envío: <span data-ago="${esc(link.last_sync_at || '')}">${esc(ago(link.last_sync_at))}</span></div></div>
+      <span class="badge ok">Permiso dado</span></div>` : ''}
+    ${sigTxt.length ? `<div class="card cream stack" style="margin-top:${asCoach ? 10 : 0}px;gap:4px">${sigTxt.map(s => `<div class="small"><b class="gold">›</b> ${esc(s)}</div>`).join('')}</div>` : ''}
+    <div class="htiles" style="margin-top:10px">${tiles}</div>
+    <p class="tiny muted" style="margin:6px 0 0">Media de los 7 días anteriores. Toca un dato para ver su gráfica.</p>
+    <div class="sec-title">${esc(m.l)} <span class="r">últimos 30 días</span></div>
+    <div class="card">${lineChart(pts, {decimals: m.k === 'sleep_h' ? 1 : m.d})}</div>
+    ${week.length ? `<div class="sec-title">Última semana</div><div class="tbl-wrap"><table class="tbl wkt"><thead><tr><th>Día</th>${ms.map(x => `<th>${x.s}</th>`).join('')}</tr></thead><tbody>
+      ${week.map(d => `<tr><td>${d.day === today() ? 'Hoy' : esc(fmtDate(d.day, {weekday:'short', day:'numeric'}))}</td>${ms.map(x => `<td>${fmtH(x.k, d[x.k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : ''}
+    ${asCoach ? `<details class="small muted" style="margin-top:14px"><summary>Último envío recibido (para revisar el atajo)</summary><pre class="mono tiny" style="white-space:pre-wrap;margin:8px 0 0">${esc(JSON.stringify(link.last_payload || {}, null, 1))}</pre></details>
+      <p class="tiny muted">Dio su permiso el ${esc(fmtDate(link.consented_at.slice(0, 10), {day:'numeric', month:'long', year:'numeric'}))}. Si lo retira, dejarás de recibir datos.</p>` : ''}`;
+}
+function healthSummaryHTML(link, days){
+  const last = k => { for (let i = days.length - 1; i >= 0; i--) if (days[i][k] != null) return days[i][k]; return null; };
+  const ms = link ? HM.filter(m => (link.metrics || []).includes(m.k) && ['steps','sleep_h','resting_hr'].includes(m.k)) : [];
+  return `<div class="sec-title">Salud del iPhone</div>
+  <div class="card tap item" data-act="ctab" data-v="health"><span class="mini ic-health">${icon('heart')}</span>
+    <div class="grow"><b>${link ? ms.map(m => `${fmtH(m.k, last(m.k))}${m.u ? ' ' + m.u : ''} ${m.k === 'steps' ? 'pasos' : m.k === 'sleep_h' ? 'de sueño' : ''}`.trim()).join(' · ') || 'Conectado' : 'Sin conectar'}</b>
+    <div class="small muted">${link ? `Último envío: ${esc(ago(link.last_sync_at))}` : 'Todavía no ha dado permiso para ver sus datos de Salud'}</div></div><span class="chev">›</span></div>`;
+}
+function healthCoachHTML(c, link, days){
+  if (!link) return empty('Salud sin conectar', `${firstName(c.full_name) || 'Este cliente'} todavía no ha conectado la app Salud. Lo hace desde su Perfil, en Salud del iPhone, y tiene que dar su permiso.`,
+    `<button class="btn sm" data-act="healthAsk">${icon('chat')} Pedírselo por mensaje</button>`)
+    + (!(S.settings || {}).health_shortcut_url ? `<p class="tiny muted center">Antes, pon el enlace del atajo en tu Perfil, en Salud del iPhone.</p>` : '');
+  return `<div id="healthBox">${healthBoxHTML(link, days, true)}</div>`;
+}
+// Refresca el apartado al llegar datos (tiempo real) y el "hace X min" cada 30 s
+function mountHealthLive(cid, asCoach){
+  if (!$('#healthBox')) return;
+  const tick = setInterval(() => document.querySelectorAll('[data-ago]').forEach(el => { el.textContent = ago(el.dataset.ago || null); }), 30000);
+  let unsub = () => {};
+  try { unsub = api.subscribeHealth(cid, async () => {
+    const {link, days} = await healthData(cid); const box = $('#healthBox'); if (!box) return;
+    if (!link) return render();
+    box.innerHTML = healthBoxHTML(link, days, asCoach); box.classList.remove('flash'); void box.offsetWidth; box.classList.add('flash');
+  }); } catch(e){ console.warn(e); }
+  S.cleanup = () => { clearInterval(tick); unsub(); };
+}
+
+VIEWS.healthConnect = async () => {
+  const [link] = await Promise.all([api.healthLink(S.me.id).catch(() => null), refreshSettings()]);
+  const url = (S.settings || {}).health_shortcut_url || '';
+  const checks = sel => HM.map(m => `<label class="check"><input type="checkbox" name="m" value="${m.k}" ${sel.includes(m.k) ? 'checked' : ''}><span><b>${m.l}</b> <span class="muted small">· ${m.desc}</span></span></label>`).join('');
+  if (!link) return shell('Conectar Salud', `
+    <div class="card cream"><b>¿Para qué sirve?</b><p class="small" style="margin:6px 0 0">${coachFirst()} verá cada día tus pasos, cómo has dormido y tus pulsaciones en reposo. Con eso ajusta mejor tu entreno y tu descanso, sin que tengas que apuntar nada.</p></div>
+    <form class="card stack" id="fHealth" style="margin-top:12px">
+      <b>Elige qué compartes</b>
+      ${checks(HM.map(m => m.k))}
+      <div style="border-top:1px solid var(--rule-2);margin:4px 0 2px"></div>
+      <label class="check"><input type="checkbox" name="consent"><span>Doy mi consentimiento para que ${esc(CFG.COACH_NAME || 'mi coach')} (${esc(CFG.BRAND || 'JPR Coach')}) reciba y guarde los datos de mi app Salud que he marcado, solo para seguir mi entrenamiento. Puedo desconectarlo cuando quiera desde aquí y pedir que se borren.</span></label>
+      <button class="btn block" type="submit">${icon('check')} Aceptar y conectar</button>
+    </form>
+    <p class="tiny muted">Los datos los envía un atajo de la app Atajos de tu iPhone, varias veces al día. Se guardan en servidores de la Unión Europea y solo los veis tú y ${coachFirst()}. Lo que no marques no se guarda. Ver la <a href="#" data-act="privacy">política de privacidad</a>.</p>`,
+    {backBtn: true, sub: CFG.BRAND});
+  const {days} = await healthData(S.me.id);
+  return shell('Salud del iPhone', `
+    <div class="card row between" style="gap:10px"><div><b><span class="live ${link.last_sync_at ? '' : 'off'}"></span>${link.last_sync_at ? 'Conectado' : 'Falta instalar el atajo'}</b><div class="small muted">Último envío: <span data-ago="${esc(link.last_sync_at || '')}">${esc(ago(link.last_sync_at))}</span></div></div>
+      <span class="badge ${link.last_sync_at ? 'ok' : 'warn'}">${link.last_sync_at ? 'Recibiendo' : 'Pendiente'}</span></div>
+    <div class="sec-title">Instálalo en 3 pasos</div>
+    <div class="card stack hsteps">
+      <div><b>1. Copia tu código</b>
+        <div class="row" style="margin-top:8px"><input class="in grow mono" readonly value="${esc(link.token)}" id="hTok"><button class="btn sm" data-act="copyTok" aria-label="Copiar código">${icon('copy')}</button></div>
+        <p class="tiny muted" style="margin:6px 0 0">Es personal: con él tus datos llegan a tu ficha. No lo compartas.</p></div>
+      <div><b>2. Instala el atajo y pega el código</b>
+        ${url ? `<a class="btn gold block" href="${esc(url)}" target="_blank" rel="noopener" style="margin-top:8px">${icon('ext')} Instalar el atajo JPR Salud</a><p class="tiny muted" style="margin:6px 0 0">Se abre la app Atajos. Toca "Configurar atajo", pega el código y toca "Añadir atajo".</p>`
+          : `<p class="small muted" style="margin:4px 0 0">${coachFirst()} todavía no ha puesto el enlace del atajo. Te avisará por Mensajes.</p>`}</div>
+      <div><b>3. Ejecútalo una vez</b><p class="small muted" style="margin:4px 0 0">En la app Atajos, toca JPR Salud y luego Permitir en todo lo que te pregunte. Arriba cambiará a "Recibiendo".</p></div>
+    </div>
+    <div class="sec-title">Que se envíe solo</div>
+    <div class="card small stack" style="gap:6px">
+      <div>En Atajos, pestaña <b>Automatización</b>, toca <b>+</b> y crea estas dos. En las dos elige <b>Ejecutar inmediatamente</b> y el atajo <b>JPR Salud</b>:</div>
+      <div><b>Al despertar:</b> Alarma › Al detenerse.</div>
+      <div><b>Al cargar el móvil:</b> Cargador › Está conectado.</div>
+      <div class="tiny muted">El iPhone solo deja leer Salud con el móvil desbloqueado, por eso usamos momentos en los que lo tienes en la mano.</div>
+    </div>
+    ${days.length ? `<div class="sec-title">Tus datos</div><div id="healthBox">${healthBoxHTML(link, days, false)}</div>` : '<div id="healthBox"></div>'}
+    <div class="sec-title">Qué compartes</div>
+    <form class="card stack" id="fHMetrics">${checks(link.metrics || [])}<button class="btn light block" type="submit">Guardar cambios</button></form>
+    ${DEMO ? `<button class="btn gold block" data-act="demoHealthSend" style="margin-top:12px">${icon('send')} Simular un envío del atajo (demo)</button>` : ''}
+    <button class="btn danger block" data-act="healthOff" style="margin-top:14px">Desconectar Salud</button>
+    <p class="tiny muted">Diste tu permiso el ${esc(fmtDate(link.consented_at.slice(0, 10), {day:'numeric', month:'long', year:'numeric'}))}.</p>`,
+    {backBtn: true, sub: CFG.BRAND});
+};
+VIEWS.healthConnect.mount = () => {
+  const f = $('#fHealth');
+  if (f) f.onsubmit = async e => {
+    e.preventDefault();
+    const ms = [...f.querySelectorAll('[name=m]:checked')].map(i => i.value);
+    if (!ms.length) return toast('Marca al menos un dato');
+    if (!f.consent.checked) return toast('Para conectar tienes que dar tu consentimiento', 3200);
+    const b = f.querySelector('[type=submit]'); b.disabled = true;
+    try { await api.healthConnect(S.me.id, ms); toast('Conectado. Ahora instala el atajo'); render(); }
+    catch(err){ toast(err.message); b.disabled = false; }
+  };
+  const g = $('#fHMetrics');
+  if (g) g.onsubmit = async e => {
+    e.preventDefault();
+    const ms = [...g.querySelectorAll('[name=m]:checked')].map(i => i.value);
+    if (!ms.length) return toast('Marca al menos un dato. Para no compartir nada, desconecta Salud.', 3500);
+    try { await api.healthSetMetrics(S.me.id, ms); toast('Guardado'); render(); } catch(err){ toast(err.message); }
+  };
+  if ($('#hTok')){
+    // Si llega el primer envío mientras está en esta pantalla, se actualiza sola
+    const tick = setInterval(() => document.querySelectorAll('[data-ago]').forEach(el => { el.textContent = ago(el.dataset.ago || null); }), 30000);
+    let unsub = () => {}; try { unsub = api.subscribeHealth(S.me.id, () => render()); } catch(e){}
+    S.cleanup = () => { clearInterval(tick); unsub(); };
+  }
+};
+
 const ACT = {
   back, home, reload: () => boot(),
   nav: el => go(el.dataset.v, {}, false),
@@ -1656,6 +1893,18 @@ const ACT = {
   async resetDemo(){ if (!(await confirmBox('Reiniciar demo', 'Se borrarán los cambios y vuelven los datos de ejemplo.', 'Reiniciar', true))) return; api.reset(); toast('Demo reiniciada'); render(); },
   privacy: () => modal(PRIVACY_HTML + '<button class="btn block" data-x="ok" style="margin-top:12px">Cerrar</button>', (m, close) => m.querySelector('[data-x=ok]').onclick = close),
   copyLink: async () => { try { await navigator.clipboard.writeText(location.origin + location.pathname); toast('Enlace copiado'); } catch(e){ toast('Mantén pulsado el enlace para copiarlo'); } },
+
+  // Salud del iPhone
+  openHealth: () => go('healthConnect'),
+  copyTok: async () => { const t = $('#hTok'); try { await navigator.clipboard.writeText(t.value); toast('Código copiado'); } catch(e){ t.select(); toast('Mantén pulsado el código para copiarlo'); } },
+  async healthOff(){
+    if (!(await confirmBox('Desconectar Salud', `${firstName(CFG.COACH_NAME) || 'Tu coach'} dejará de recibir tus datos y tu código dejará de funcionar. Después puedes borrar el atajo de la app Atajos.`, 'Desconectar', true))) return;
+    const wipe = await confirmBox('¿Borrar también lo ya enviado?', 'Si dices que sí, se borran todos los datos de Salud que ya estaban guardados. Si cancelas, se quedan para ver tu evolución.', 'Sí, borrarlos', true);
+    try { await api.healthDisconnect(S.me.id, wipe); toast(wipe ? 'Salud desconectada y datos borrados' : 'Salud desconectada'); render(); } catch(err){ toast(err.message); }
+  },
+  demoHealthSend: async () => { await api.demoHealthSend(S.me.id); toast('Datos enviados'); },
+  hMetric: el => { S.p.hm = el.dataset.v; const h = S.cache.health, box = $('#healthBox'); if (h?.link && box) box.innerHTML = healthBoxHTML(h.link, h.days, S.me.role === 'coach'); },
+  healthAsk: () => { S.p.tab = 'chat'; S.p.prefill = `Hola. Si te parece bien, conecta la app Salud de tu iPhone en JPR Coach: Perfil › Salud del iPhone. Así veo tus pasos, tu sueño y tus pulsaciones en reposo, y ajusto mejor el entreno. Eliges tú qué compartes y lo puedes quitar cuando quieras.`; render(); },
 
   // Coach
   openClient: el => go('client', {id: el.dataset.id, tab: 'summary'}),
@@ -1825,6 +2074,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
 <p><b>Responsable:</b> ${esc(CFG.COACH_NAME || 'el coach')} (${esc(CFG.BRAND || 'JPR Coach')}).</p>
 <p><b>Qué datos tratamos:</b> nombre, email, teléfono, fecha de nacimiento, altura, peso, medidas corporales, entrenos y notas sobre tu estado (sueño, estrés, molestias). Algunos son datos de salud.</p>
 <p><b>Para qué:</b> solo para preparar y seguir tu plan de entrenamiento y alimentación.</p>
+<p><b>App Salud del iPhone (opcional):</b> solo si tú lo conectas y das tu permiso en Perfil › Salud del iPhone, recibimos los datos que marques (pasos, sueño, pulsaciones en reposo, variabilidad cardiaca, calorías activas y peso). Los envía un atajo de tu iPhone. Puedes cambiar qué compartes o desconectarlo cuando quieras, y borrar lo ya enviado.</p>
 <p><b>Base legal:</b> tu consentimiento explícito, que das al crear la cuenta y puedes retirar cuando quieras.</p>
 <p><b>Quién los ve:</b> tú y tu coach. Se guardan en servidores de Supabase en la Unión Europea. No se venden ni se ceden a terceros.</p>
 <p><b>Cuánto tiempo:</b> mientras seas cliente. Si te das de baja, se borran cuando lo pidas.</p>
