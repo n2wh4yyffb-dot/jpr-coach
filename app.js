@@ -74,10 +74,24 @@ const I = {
   upload:'<path d="M12 16V4M7 9l5-5 5 5M5 20h14"/>',
   card:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/>',
   ext:'<path d="M14 4h6v6M20 4l-9 9M18 14v6H4V6h6"/>',
+  bell:'<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
   heart:'<path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.3a4.3 4.3 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z"/>',
 };
 /* ---------- Salud del iPhone: datos que se pueden compartir ---------- */
 const HEALTH_CONSENT_V = '2026-11-22';
+/* ---------- Avisos en el móvil (Web Push) ---------- */
+const VAPID_PUBLIC = 'BBB7ImvcJcuCr0U3ETE3_9G6XQm1ojU-Xntoe8mfE7eUhYvpcfW-h8DiEXgsX0Sd7tJo6nGR8_wKcn2IprgfjTk';
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+const isStandalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+const b64uBytes = s => { const p = s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4); return Uint8Array.from(atob(p), c => c.charCodeAt(0)); };
+const swReady = () => Promise.race([navigator.serviceWorker.ready, new Promise((_, rej) => setTimeout(() => rej(new Error('La app aún se está instalando. Ciérrala, vuelve a abrirla y prueba otra vez.')), 6000))]);
+async function pushState(){
+  if (DEMO) return 'demo';
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return isIOS && !isStandalone() ? 'install' : 'unsupported';
+  if (isIOS && !isStandalone()) return 'install';
+  if (Notification.permission === 'denied') return 'denied';
+  try { const reg = await swReady(); return (await reg.pushManager.getSubscription()) ? 'on' : 'off'; } catch(e){ return 'off'; }
+}
 const HM = [
   {k:'steps', l:'Pasos', s:'Pasos', u:'', d:0, desc:'pasos del día'},
   {k:'sleep_h', l:'Sueño', s:'Sueño', u:'', d:1, desc:'lo que dormiste la noche anterior'},
@@ -196,6 +210,12 @@ function SupabaseAPI(){
     payments: cid => sb.from('payments').select('*').eq('client_id', cid).order('paid_at', {ascending:false}).limit(100).then(ok),
     addManualPayment: row => sb.from('payments').insert({...pick(row, TABLES.payments), method: 'manual'}).select().single().then(ok),
     deletePayment: id => del('payments', id),
+    // Avisos en el móvil
+    async pushSave(p){ return ok(await sb.from('push_subs').upsert({...p, user_id: S.me.id}, {onConflict: 'endpoint'})); },
+    async pushDelete(endpoint){ return ok(await sb.from('push_subs').delete().eq('endpoint', endpoint)); },
+    async pushCount(cid){ const {count, error} = await sb.from('push_subs').select('id', {count: 'exact', head: true}).eq('user_id', cid); if (error) throw error; return count || 0; },
+    lastReminder: cid => sb.from('health_reminders').select('*').eq('client_id', cid).order('day', {ascending: false}).limit(1).maybeSingle().then(ok),
+    async pushTest(){ const {data, error} = await sb.functions.invoke('steps-reminder', {body: {test: true}}); if (error) throw new Error('No se ha podido enviar el aviso de prueba'); return data; },
     // Salud del iPhone
     healthLink: cid => sb.from('health_links').select('*').eq('client_id', cid).maybeSingle().then(ok),
     async healthConnect(cid, metrics){ return ok(await sb.from('health_links').insert({client_id: cid, token: newToken(), metrics, consent_version: HEALTH_CONSENT_V}).select().single()); },
@@ -317,6 +337,10 @@ function DemoAPI(){
       save(); return {demo: true};
     },
     async portal(){ return {demo: true}; },
+    async pushSave(){ return wait(null); }, async pushDelete(){ return wait(null); },
+    pushCount: cid => wait(cid === 'demo-ana' ? 1 : 0),
+    lastReminder: cid => wait(cid === 'demo-ana' ? {day: isoDaysAgo(1), steps: 7420, goal: 10000, sent: 1} : null),
+    async pushTest(){ return wait({ok: true}); },
     healthLink: cid => wait(db.health_links.find(x => x.client_id === cid) || null),
     async healthConnect(cid, metrics){ db.health_links = db.health_links.filter(x => x.client_id !== cid); const r = {client_id: cid, token: newToken(), metrics, consent_version: HEALTH_CONSENT_V, consented_at: now(), last_sync_at: null, last_payload: null}; db.health_links.push(r); save(); hl(cid); return wait(r); },
     async healthSetMetrics(cid, metrics){ const r = db.health_links.find(x => x.client_id === cid); r.metrics = metrics; save(); hl(cid); return wait(r); },
@@ -685,6 +709,14 @@ VIEWS.coachProfile = async () => { const wt = await welcomeText(); await refresh
     <p class="tiny muted" style="margin:-4px 0 0">Tus clientes lo instalan desde Perfil › Salud del iPhone, después de dar su permiso. Tú ves sus datos en la pestaña Salud de cada ficha.</p>
     <button class="btn" type="submit">${icon('check')} Guardar</button>
   </form>
+  <div class="sec-title">Aviso de pasos</div>
+  <form class="card stack" id="fSteps">
+    <label class="f">Aviso diario<select class="in" name="on"><option value="on" ${(S.settings || {}).steps_reminder !== 'off' ? 'selected' : ''}>Activado</option><option value="off" ${(S.settings || {}).steps_reminder === 'off' ? 'selected' : ''}>Desactivado</option></select></label>
+    <div class="grid2"><label class="f">Meta de pasos<input class="in" name="goal" type="number" inputmode="numeric" min="1000" max="50000" step="500" value="${esc((S.settings || {}).steps_goal || '10000')}"></label>
+      <label class="f">Hora del aviso<select class="in" name="hour">${[17,18,19,20,21,22,23].map(h => `<option value="${h}" ${String((S.settings || {}).steps_hour || '21') === String(h) ? 'selected' : ''}>${h}:00</option>`).join('')}</select></label></div>
+    <p class="tiny muted" style="margin:-4px 0 0">Cada día a esa hora (hora de España), los clientes con Salud conectada que no lleguen a la meta reciben un aviso en el móvil, si han activado los avisos en su Perfil. Se cuenta con los pasos del último envío del atajo.</p>
+    <button class="btn" type="submit">${icon('check')} Guardar</button>
+  </form>
   <div class="sec-title">Mensaje de bienvenida</div>
   <form class="card stack" id="fWelcome">
     <label class="f">Cuándo sale<select class="in" name="mode">
@@ -721,6 +753,12 @@ VIEWS.coachProfile.mount = () => {
     e.preventDefault(); const u = fh.url.value.trim();
     if (u && !/^https:\/\/(www\.)?icloud\.com\/shortcuts\//i.test(u)) return toast('Pega el enlace que da Atajos al compartir: empieza por https://www.icloud.com/shortcuts/', 4500);
     try { await api.saveSetting('health_shortcut_url', u); await refreshSettings(); toast('Enlace del atajo guardado'); } catch(err){ toast(err.message); }
+  };
+  const fs = $('#fSteps');
+  if (fs) fs.onsubmit = async e => {
+    e.preventDefault(); const g = parseInt(fs.goal.value, 10);
+    if (!(g >= 1000 && g <= 50000)) return toast('Pon una meta entre 1.000 y 50.000 pasos');
+    try { await api.saveSetting('steps_reminder', fs.on.value); await api.saveSetting('steps_goal', String(g)); await api.saveSetting('steps_hour', fs.hour.value); await refreshSettings(); toast('Aviso de pasos guardado'); } catch(err){ toast(err.message); }
   };
   const f = $('#fWelcome'); if (!f) return;
   f.onsubmit = async e => {
@@ -1386,12 +1424,13 @@ VIEWS.metricNew.mount = bindDraft;
 /* ---------- Perfil (cliente) ---------- */
 VIEWS.profile = async () => {
   const c = S.me;
-  const [bill, pays, hlink] = await Promise.all([api.billing(c.id).catch(() => null), api.payments(c.id).catch(() => []), api.healthLink(c.id).catch(() => null)]);
+  const [bill, pays, hlink, pst] = await Promise.all([api.billing(c.id).catch(() => null), api.payments(c.id).catch(() => []), api.healthLink(c.id).catch(() => null), pushState()]);
   return shell('Perfil', `
     <div class="card item"><div class="avatar lg">${esc(initials(c.full_name))}</div><div><h2>${esc(c.full_name)}</h2><div class="muted small">${esc(c.email || '')}</div></div></div>
     ${c.goal ? `<div class="card cream" style="margin-top:10px"><div class="small muted">Tu objetivo</div><b>${esc(c.goal)}</b></div>` : ''}
     ${clientPayHTML(bill, pays)}
     ${healthCardHTML(hlink)}
+    ${pushCardHTML(pst)}
     <div class="sec-title">Tus datos</div>
     <form class="stack" id="fMe">
       <label class="f">Nombre y apellidos<input class="in" name="full_name" value="${esc(c.full_name)}"></label>
@@ -1733,8 +1772,24 @@ const reorder = (arr, i, dir) => { const j = i + dir; if (j < 0 || j >= arr.leng
    ===================================================================== */
 const coachFirst = () => esc(firstName(CFG.COACH_NAME) || 'tu coach');
 async function healthData(cid){
-  const [link, days] = await Promise.all([api.healthLink(cid).catch(() => null), api.healthDays(cid, 60).catch(() => [])]);
-  S.cache.health = {link, days}; return S.cache.health;
+  const coach = S.me.role === 'coach';
+  const [link, days, pushN, rem] = await Promise.all([api.healthLink(cid).catch(() => null), api.healthDays(cid, 60).catch(() => []),
+    coach ? api.pushCount(cid).catch(() => null) : null, coach ? api.lastReminder(cid).catch(() => null) : null]);
+  S.cache.health = {link, days, pushN, rem}; return S.cache.health;
+}
+function pushCardHTML(state){
+  const t = {
+    on: ['Avisos activados', 'Te llegarán los recordatorios de tu coach, como el aviso de pasos de la noche.'],
+    off: ['Activa los avisos', 'Recibe un aviso en el móvil si por la noche todavía no has llegado a tus pasos.'],
+    install: ['Añade la app a tu pantalla de inicio', 'Para recibir avisos en el iPhone: en Safari toca Compartir › "Añadir a pantalla de inicio" y abre JPR Coach desde ese icono.'],
+    denied: ['Avisos bloqueados', 'Los has bloqueado en el iPhone. Actívalos en Ajustes › Notificaciones › JPR Coach.'],
+    unsupported: ['Avisos no disponibles', 'Este navegador no admite avisos. En iPhone, abre la app desde la pantalla de inicio.'],
+    demo: ['Avisos en el móvil', 'En la demo no se envían avisos de verdad.'],
+  }[state] || ['Avisos en el móvil', ''];
+  const btns = state === 'on' ? `<div class="grid2" style="margin-top:10px"><button class="btn light sm" data-act="pushTest">${icon('send')} Probar aviso</button><button class="btn light sm" data-act="pushOff">Desactivar</button></div>`
+    : state === 'off' ? `<button class="btn gold block" data-act="pushOn" style="margin-top:10px">${icon('bell')} Activar avisos</button>` : '';
+  return `<div class="sec-title">Avisos en el móvil</div>
+  <div class="card"><div class="item" style="padding:0"><span class="mini ${state === 'on' ? 'ic-ok' : 'ic-health'}">${icon('bell')}</span><div class="grow"><b>${t[0]}</b><div class="small muted">${t[1]}</div></div></div>${btns}</div>`;
 }
 function healthCardHTML(link){
   return `<div class="sec-title">Salud del iPhone</div>
@@ -1776,7 +1831,8 @@ function healthBoxHTML(link, days, asCoach){
   return `
     ${asCoach ? `<div class="card row between" style="gap:10px"><div><b><span class="live ${fresh ? '' : 'off'}"></span>${fresh ? 'Recibiendo datos' : link.last_sync_at ? 'Sin datos recientes' : 'Esperando el primer envío'}</b>
       <div class="small muted">Último envío: <span data-ago="${esc(link.last_sync_at || '')}">${esc(ago(link.last_sync_at))}</span></div></div>
-      <span class="badge ok">Permiso dado</span></div>` : ''}
+      <span class="badge ok">Permiso dado</span></div>
+    <div class="small muted" style="margin-top:8px">Avisos en el móvil: <b>${S.cache.health?.pushN == null ? '-' : S.cache.health.pushN ? 'activados' : 'no activados'}</b>${S.cache.health?.rem ? ` · último aviso de pasos ${esc(relDate(S.cache.health.rem.day))} (${fmtNum(S.cache.health.rem.steps, 0)} pasos)` : ''}</div>` : ''}
     ${sigTxt.length ? `<div class="card cream stack" style="margin-top:${asCoach ? 10 : 0}px;gap:4px">${sigTxt.map(s => `<div class="small"><b class="gold">›</b> ${esc(s)}</div>`).join('')}</div>` : ''}
     <div class="htiles" style="margin-top:10px">${tiles}</div>
     <p class="tiny muted" style="margin:6px 0 0">Media de los 7 días anteriores. Toca un dato para ver su gráfica.</p>
@@ -1829,10 +1885,11 @@ VIEWS.healthConnect = async () => {
     </form>
     <p class="tiny muted">Los datos los envía un atajo de la app Atajos de tu iPhone, varias veces al día. Se guardan en servidores de la Unión Europea y solo los veis tú y ${coachFirst()}. Lo que no marques no se guarda. Ver la <a href="#" data-act="privacy">política de privacidad</a>.</p>`,
     {backBtn: true, sub: CFG.BRAND});
-  const {days} = await healthData(S.me.id);
+  const [{days}, pst] = await Promise.all([healthData(S.me.id), pushState()]);
   return shell('Salud del iPhone', `
     <div class="card row between" style="gap:10px"><div><b><span class="live ${link.last_sync_at ? '' : 'off'}"></span>${link.last_sync_at ? 'Conectado' : 'Falta instalar el atajo'}</b><div class="small muted">Último envío: <span data-ago="${esc(link.last_sync_at || '')}">${esc(ago(link.last_sync_at))}</span></div></div>
       <span class="badge ${link.last_sync_at ? 'ok' : 'warn'}">${link.last_sync_at ? 'Recibiendo' : 'Pendiente'}</span></div>
+    ${pst !== 'on' ? pushCardHTML(pst) : ''}
     <div class="sec-title">Instálalo en 3 pasos</div>
     <div class="card stack hsteps">
       <div><b>1. Copia tu código</b>
@@ -1893,6 +1950,26 @@ const ACT = {
   async resetDemo(){ if (!(await confirmBox('Reiniciar demo', 'Se borrarán los cambios y vuelven los datos de ejemplo.', 'Reiniciar', true))) return; api.reset(); toast('Demo reiniciada'); render(); },
   privacy: () => modal(PRIVACY_HTML + '<button class="btn block" data-x="ok" style="margin-top:12px">Cerrar</button>', (m, close) => m.querySelector('[data-x=ok]').onclick = close),
   copyLink: async () => { try { await navigator.clipboard.writeText(location.origin + location.pathname); toast('Enlace copiado'); } catch(e){ toast('Mantén pulsado el enlace para copiarlo'); } },
+
+  // Avisos en el móvil
+  async pushOn(el){
+    if (!('Notification' in window)) return toast('Este navegador no admite avisos');
+    el.disabled = true;
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted'){ toast('Sin permiso no te pueden llegar avisos. Puedes activarlos en Ajustes del iPhone › Notificaciones.', 4500); return render(); }
+      const reg = await swReady();
+      const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: b64uBytes(VAPID_PUBLIC)});
+      const j = sub.toJSON();
+      await api.pushSave({endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, ua: navigator.userAgent.slice(0, 140)});
+      toast('Avisos activados'); render();
+    } catch(err){ toast(err.message || 'No se han podido activar los avisos', 4000); el.disabled = false; }
+  },
+  async pushOff(){
+    try { const reg = await swReady(); const sub = await reg.pushManager.getSubscription(); if (sub){ await api.pushDelete(sub.endpoint).catch(() => {}); await sub.unsubscribe(); } toast('Avisos desactivados'); render(); }
+    catch(err){ toast(err.message); }
+  },
+  async pushTest(el){ el.disabled = true; try { const r = await api.pushTest(); toast(r && r.sent ? 'Aviso enviado: te llegará en unos segundos' : 'No se ha podido enviar. Desactiva y vuelve a activar los avisos.', 4000); } catch(err){ toast(err.message); } el.disabled = false; },
 
   // Salud del iPhone
   openHealth: () => go('healthConnect'),
@@ -2075,6 +2152,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
 <p><b>Qué datos tratamos:</b> nombre, email, teléfono, fecha de nacimiento, altura, peso, medidas corporales, entrenos y notas sobre tu estado (sueño, estrés, molestias). Algunos son datos de salud.</p>
 <p><b>Para qué:</b> solo para preparar y seguir tu plan de entrenamiento y alimentación.</p>
 <p><b>App Salud del iPhone (opcional):</b> solo si tú lo conectas y das tu permiso en Perfil › Salud del iPhone, recibimos los datos que marques (pasos, sueño, pulsaciones en reposo, variabilidad cardiaca, calorías activas y peso). Los envía un atajo de tu iPhone. Puedes cambiar qué compartes o desconectarlo cuando quieras, y borrar lo ya enviado.</p>
+<p><b>Avisos en el móvil (opcional):</b> si los activas, guardamos la dirección de avisos de tu móvil para mandarte recordatorios, como el aviso de pasos de la noche. Puedes desactivarlos en Perfil o en los Ajustes del iPhone.</p>
 <p><b>Base legal:</b> tu consentimiento explícito, que das al crear la cuenta y puedes retirar cuando quieras.</p>
 <p><b>Quién los ve:</b> tú y tu coach. Se guardan en servidores de Supabase en la Unión Europea. No se venden ni se ceden a terceros.</p>
 <p><b>Cuánto tiempo:</b> mientras seas cliente. Si te das de baja, se borran cuando lo pidas.</p>
