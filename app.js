@@ -77,6 +77,7 @@ const I = {
   user:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   users:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6"/>',
   plus:'<path d="M12 5v14M5 12h14"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   home:'<path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/>',
   back:'<path d="m15 18-6-6 6-6"/>',
   trash:'<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
@@ -561,6 +562,35 @@ function playVideo(u, title = ''){
   modal(`${title ? `<h2 style="margin-bottom:10px">${esc(title)}</h2>` : ''}<div class="vplayer ${vertical ? 'v' : ''}">${player}</div>
     <div class="row between" style="margin-top:12px;gap:10px">${id ? `<a class="small muted" href="${esc(u)}" target="_blank" rel="noopener">¿No carga? Ábrelo en YouTube</a>` : '<span></span>'}<button class="btn" data-x="ok">Cerrar</button></div>`,
     (m, close) => { m.classList.add('vmodal'); m.querySelector('[data-x=ok]').onclick = close; });
+}
+/* Descanso: lee "90 s", "2 min", "1'30\"", "1:30"... del ejercicio o, si no tiene, del nombre del día "(descansos 1'30")" */
+function restSecs(txt){
+  const t = String(txt || '').toLowerCase().replace(/[’´]/g, "'").replace(/[”″]/g, '"').replace(',', '.');
+  let m = t.match(/(\d+)\s*[:']\s*(\d{1,2})/); if (m) return +m[1] * 60 + +m[2];
+  m = t.match(/(\d+(?:\.\d+)?)\s*(min|m\b|')/); if (m) return Math.round(parseFloat(m[1]) * 60);
+  m = t.match(/(\d+)\s*(s|seg|")/); if (m) return +m[1];
+  m = t.match(/^\s*(\d+)\s*$/); if (m) return +m[1] <= 10 ? +m[1] * 60 : +m[1];
+  return 0;
+}
+const restOf = (t, dayName) => { const own = restSecs(t?.rest); if (own) return own; const m = String(dayName || '').match(/descansos?\s*:?\s*([^)]+)/i); return m ? restSecs(m[1]) : 0; };
+const mmss = n => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
+let restT = null;
+function restTimer(secs, label = ''){
+  clearInterval(restT); let bar = document.getElementById('restbar');
+  if (!secs){ bar && bar.remove(); return; }
+  if (!bar){ bar = document.createElement('div'); bar.id = 'restbar'; document.body.appendChild(bar); }
+  const end = Date.now() + secs * 1000; let fired = false;
+  const draw = () => {
+    if (S.view !== 'session'){ clearInterval(restT); bar.remove(); return; }
+    const left = Math.max(0, Math.round((end - Date.now()) / 1000));
+    bar.className = left ? '' : 'go';
+    bar.innerHTML = left ? `<div class="grow"><small>Descanso${label ? ` · ${esc(label)}` : ''}</small><b>${mmss(left)}</b></div><button data-r="15">+15 s</button><button data-r="x">Saltar</button>`
+      : `<div class="grow"><small>Descanso terminado</small><b>¡Siguiente serie!</b></div><button data-r="x">OK</button>`;
+    bar.querySelectorAll('button').forEach(b => b.onclick = () => b.dataset.r === 'x' ? (clearInterval(restT), bar.remove()) : restTimer(left + 15, label));
+    if (!left && !fired){ fired = true; clearInterval(restT); try { navigator.vibrate && navigator.vibrate([300, 150, 300]); } catch(e){}
+      try { const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(), g = a.createGain(); o.frequency.value = 880; o.connect(g); g.connect(a.destination); g.gain.setValueAtTime(.25, a.currentTime); g.gain.exponentialRampToValueAtTime(.001, a.currentTime + .6); o.start(); o.stop(a.currentTime + .6); } catch(e){} }
+  };
+  draw(); restT = setInterval(draw, 500);
 }
 function lastFor(logs, exercise){
   for (const l of logs){ const e = (l.entries || []).find(x => x.exercise === exercise); if (e && e.sets?.some(s => s.kg || s.reps)) return {date: l.date, sets: e.sets}; }
@@ -1088,7 +1118,7 @@ async function offerImport(imp, cid, src){
 }
 
 /* ---------- Editor de plan de entreno ---------- */
-const blankEx = () => ({name:'', sets:'3', reps:'10', rest:'90 s', load:'', notes:''});
+const blankEx = () => ({name:'', sets:'3', reps:'10', rir:'', rest:'90 s', load:'', notes:''});
 VIEWS.planEdit = async () => {
   if (!S.draft){
     if (S.p.planId){ const plans = await api.plans(S.p.clientId); S.draft = clone(plans.find(p => p.id === S.p.planId)); }
@@ -1118,8 +1148,8 @@ VIEWS.planEdit = async () => {
               <input class="in grow" list="exlist" data-path="days.${di}.exercises.${xi}.name" value="${esc(x.name)}" placeholder="Ejercicio">
               <button class="mini" data-act="exMove" data-d="${di}" data-x="${xi}" data-dir="-1" aria-label="Subir">${icon('up')}</button>
               <button class="mini bad" data-act="exDel" data-d="${di}" data-x="${xi}" aria-label="Quitar">${icon('x')}</button></div>
-            <div class="grid4" style="grid-template-columns:.8fr 1.7fr 1.1fr 1.1fr">
-              ${[['sets','Series'],['reps','Reps'],['rest','Descanso'],['load','Carga']].map(([k,l]) => `<div><div class="lbl">${l}</div><input class="in" data-path="days.${di}.exercises.${xi}.${k}" value="${esc(x[k])}"></div>`).join('')}
+            <div class="grid4" style="grid-template-columns:.7fr 1.5fr .7fr 1fr 1fr">
+              ${[['sets','Series'],['reps','Reps'],['rir','RIR'],['rest','Descanso'],['load','Carga']].map(([k,l]) => `<div><div class="lbl">${l}</div><input class="in" data-path="days.${di}.exercises.${xi}.${k}" value="${esc(x[k])}"></div>`).join('')}
             </div>
             <input class="in" data-path="days.${di}.exercises.${xi}.notes" value="${esc(x.notes)}" placeholder="Notas de técnica (opcional)" style="font-size:14px;padding:9px 10px">
             <input class="in" type="url" data-path="days.${di}.exercises.${xi}.video" value="${esc(x.video || '')}" placeholder="Enlace del vídeo (opcional)" style="font-size:14px;padding:9px 10px;margin-top:6px">
@@ -1328,7 +1358,7 @@ VIEWS.session = async () => {
       entries: day.exercises.map(x => {
         const last = lastFor(logs, x.name);
         const n = Math.max(1, parseInt(x.sets) || (last ? last.sets.length : 3));
-        return {exercise: x.name, _target: x, _last: last, sets: Array.from({length: n}, (_, i) => ({reps: '', kg: '', _ph: last?.sets[i] || last?.sets.at(-1) || {}, _i: i, _done: false}))};
+        return {exercise: x.name, _target: x, _last: last, sets: Array.from({length: n}, (_, i) => ({reps: '', kg: '', rir: '', _ph: last?.sets[i] || last?.sets.at(-1) || {}, _prev: last?.sets[i] || null, _i: i, _done: false}))};
       })};
   }
   const s = S.draft;
@@ -1340,16 +1370,18 @@ VIEWS.session = async () => {
       const t = e._target || {};
       return `<div class="exs">
         <div class="exs-head"><b>${esc(e.exercise)}</b>
-          <div class="target">${t.sets ? `<span class="chip">${esc(t.sets)} series</span>` : ''}${t.reps ? `<span class="chip">${esc(t.reps)}${/^\d+(\s*[-/]\s*\d+)*$/.test(String(t.reps).trim()) ? ' reps' : ''}</span>` : ''}${t.rest ? `<span class="chip">${esc(t.rest)}</span>` : ''}${t.load ? `<span class="chip gold">${esc(t.load)}</span>` : ''}</div>
+          <div class="target">${t.sets ? `<span class="chip">${esc(t.sets)} series</span>` : ''}${t.reps ? `<span class="chip">${esc(t.reps)}${/^\d+(\s*[-/]\s*\d+)*$/.test(String(t.reps).trim()) ? ' reps' : ''}</span>` : ''}${t.rir ? `<span class="chip">RIR ${esc(t.rir)}</span>` : ''}${restOf(t, s.day_name) ? `<span class="chip rest">${icon('clock')} Descanso ${mmss(restOf(t, s.day_name))}</span>` : t.rest ? `<span class="chip">${esc(t.rest)}</span>` : ''}${t.load ? `<span class="chip gold">${esc(t.load)}</span>` : ''}</div>
           ${t.notes ? `<div class="small muted" style="margin-top:6px">${esc(t.notes)}</div>` : ''}
           ${t.video ? `<div class="vids">${videoLinks(t.video)}</div>` : ''}
-          ${e._last ? `<div class="tiny muted" style="margin-top:4px">Última vez (${relDate(e._last.date)}): ${e._last.sets.map(x => `${esc(x.kg || '-')} kg x ${esc(x.reps || '-')}`).join(', ')}</div>` : ''}
+          ${e._last ? `<div class="tiny muted" style="margin-top:4px">"Anterior" es lo que hiciste ${esc(relDate(e._last.date))}.</div>` : ''}
         </div>
-        <div class="set-head"><span>Serie</span><span>Kg</span><span>Reps</span><span></span></div>
+        <div class="set-head"><span>Serie</span><span>Anterior</span><span>Kg</span><span>Reps</span><span>RIR</span><span></span></div>
         ${e.sets.map((st, si) => `<div class="set ${st._done ? 'done' : ''}" data-set="${ei}.${si}">
           <span class="n">${si + 1}</span>
+          <span class="prev">${st._prev && (st._prev.kg || st._prev.reps) ? `${esc(st._prev.kg || '-')}<i>×</i>${esc(st._prev.reps || '-')}${st._prev.rir !== undefined && st._prev.rir !== '' ? `<em>RIR ${esc(st._prev.rir)}</em>` : ''}` : '-'}</span>
           <input class="in" inputmode="decimal" data-path="entries.${ei}.sets.${si}.kg" value="${esc(st.kg)}" placeholder="${esc(st._ph.kg || (t.load && parseFloat(t.load)) || '')}">
           <input class="in" inputmode="numeric" data-path="entries.${ei}.sets.${si}.reps" value="${esc(st.reps)}" placeholder="${esc(st._ph.reps || repsFor(t, si))}">
+          <input class="in rir" inputmode="numeric" data-path="entries.${ei}.sets.${si}.rir" value="${esc(st.rir ?? '')}" placeholder="${esc(t.rir || st._ph.rir || '')}">
           <button class="tick" data-act="setDone" data-e="${ei}" data-s="${si}" aria-label="Hecha">${icon('check')}</button>
         </div>`).join('')}
         <div class="exs-foot row between"><button class="btn ghost sm" data-act="setAdd" data-e="${ei}">${icon('plus')} Serie</button>${e.sets.length > 1 ? `<button class="btn ghost sm" data-act="setDel" data-e="${ei}">Quitar serie</button>` : ''}</div>
@@ -1361,7 +1393,7 @@ VIEWS.session = async () => {
       <label class="f">Notas o molestias<textarea class="in" data-path="notes" placeholder="Cómo te has sentido, alguna molestia...">${esc(s.notes)}</textarea></label>
     </div>
     <button class="btn gold block" style="margin-top:14px" data-act="sessionSave">${icon('check')} Guardar entreno</button>
-    <p class="tiny muted center">Si dejas una casilla vacía se guarda lo que aparece en gris.</p>`, {backBtn: true, sub: 'Entreno de hoy'});
+    <p class="tiny muted center">Marca cada serie con el check al terminarla: se rellena con lo que aparece en gris si no lo has cambiado y empieza a contar el descanso. RIR: repeticiones que te quedaban en reserva.</p>`, {backBtn: true, sub: 'Entreno de hoy'});
 };
 VIEWS.session.mount = bindDraft;
 
@@ -1437,7 +1469,7 @@ function logsListHTML(logs, canDelete = false){
   return `<div class="list">${logs.map(l => `
     <details class="card"><summary class="row between" style="cursor:pointer;list-style:none">
       <div class="grow"><b>${esc(l.day_name || 'Entreno')}</b>${l._pending ? ' <span class="badge warn">pendiente</span>' : ''}<div class="small muted">${fmtDate(l.date, {weekday:'short', day:'numeric', month:'short'})}${l.rpe ? `, RPE ${esc(l.rpe)}` : ''}, ${fmtNum(volume(l) / 1000, 1)} t</div></div><span class="chev">›</span></summary>
-      <div style="margin-top:10px" class="small">${(l.entries || []).map(e => `<div style="margin:6px 0"><b>${esc(e.exercise)}</b>: ${(e.sets || []).map(s => `${esc(s.kg || '-')} kg x ${esc(s.reps || '-')}`).join(', ')}</div>`).join('')}
+      <div style="margin-top:10px" class="small">${(l.entries || []).map(e => `<div style="margin:6px 0"><b>${esc(e.exercise)}</b>: ${(e.sets || []).map(s => `${esc(s.kg || '-')} kg x ${esc(s.reps || '-')}${s.rir !== undefined && s.rir !== '' ? ` (RIR ${esc(s.rir)})` : ''}`).join(', ')}</div>`).join('')}
       ${l.notes ? `<div class="card cream" style="margin-top:8px;padding:10px">${esc(l.notes)}</div>` : ''}
       <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="logSummary" data-id="${esc(l.id)}" data-cid="${esc(curCid())}">${icon('chart')} Ver resumen</button>
       ${canDelete && !l._pending ? `<button class="btn sm danger" data-act="delLog" data-id="${esc(l.id)}">${icon('trash')} Borrar entreno</button>` : ''}</div></div>
@@ -2195,14 +2227,18 @@ const ACT = {
     if (st._done && !st.kg && t.load) st.kg = String(parseFloat(t.load) || '');
     if (st._done && !st.reps && t.reps) st.reps = String(repsFor(t, +el.dataset.s));
     const row = el.closest('.set'); row.classList.toggle('done', st._done);
+    if (st._done && (st.rir ?? '') === '' && t.rir) st.rir = String(parseInt(t.rir) || '');
     row.querySelector('[data-path$=".kg"]').value = st.kg; row.querySelector('[data-path$=".reps"]').value = st.reps;
+    const ri = row.querySelector('[data-path$=".rir"]'); if (ri) ri.value = st.rir ?? '';
+    const e = S.draft.entries[el.dataset.e], lastSet = +el.dataset.s === e.sets.length - 1;
+    if (st._done) restTimer(restOf(t, S.draft.day_name), lastSet ? 'último de este ejercicio' : `antes de la serie ${+el.dataset.s + 2}`); else restTimer(0);
   },
-  setAdd: el => { const e = S.draft.entries[el.dataset.e]; const last = e.sets.at(-1); e.sets.push({reps: '', kg: '', _ph: {kg: last.kg || last._ph.kg, reps: last.reps || last._ph.reps}, _done: false}); render(); },
+  setAdd: el => { const e = S.draft.entries[el.dataset.e]; const last = e.sets.at(-1); e.sets.push({reps: '', kg: '', rir: '', _ph: {kg: last.kg || last._ph.kg, reps: last.reps || last._ph.reps, rir: last.rir || last._ph.rir}, _prev: e._last?.sets[e.sets.length] || null, _done: false}); render(); },
   setDel: el => { S.draft.entries[el.dataset.e].sets.pop(); render(); },
   rpe: el => { S.draft.rpe = +el.dataset.v; document.querySelectorAll('[data-act=rpe]').forEach(b => b.classList.toggle('on', b === el)); },
   async sessionSave(el){
     const s = S.draft;
-    const entries = s.entries.map(e => ({exercise: e.exercise, sets: e.sets.map(st => ({kg: String(st.kg || st._ph.kg || '').replace(',', '.'), reps: String(st.reps || st._ph.reps || '')})).filter(st => st.kg || st.reps)})).filter(e => e.sets.length);
+    const entries = s.entries.map(e => ({exercise: e.exercise, sets: e.sets.map(st => { const o = {kg: String(st.kg || st._ph.kg || '').replace(',', '.'), reps: String(st.reps || st._ph.reps || '')}; if (String(st.rir ?? '').trim() !== '') o.rir = String(st.rir).trim(); return o; }).filter(st => st.kg || st.reps)})).filter(e => e.sets.length);
     if (!entries.length) return toast('Apunta al menos una serie');
     el.disabled = true;
     try {
@@ -2345,7 +2381,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 18;
+const APP_VERSION = 19;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
