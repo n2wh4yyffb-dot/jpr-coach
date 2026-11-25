@@ -499,11 +499,11 @@ window.addEventListener('offline', offBanner);
 const S = { me: null, view: 'loading', p: {}, stack: [], cache: {}, draft: null, unread: {}, unsub: null };
 function go(view, p = {}, push = true){
   if (push && S.view !== 'loading') { S.stack.push({view: S.view, p: S.p}); try { history.pushState({n: S.stack.length}, ''); } catch(e){} }
-  S.view = view; S.p = p; S.draft = null; window.scrollTo(0, 0); render();
+  S.view = view; S.p = p; S.draft = null; S.nav = true; window.scrollTo(0, 0); render();
 }
 function back(){
   const prev = S.stack.pop();
-  if (prev){ S.view = prev.view; S.p = prev.p; S.draft = null; render(); }
+  if (prev){ S.view = prev.view; S.p = prev.p; S.draft = null; S.nav = true; render(); }
   else home();
 }
 function home(){ S.stack = []; go(S.me?.role === 'coach' ? 'clients' : 'today', {}, false); }
@@ -515,11 +515,21 @@ async function render(){
   const seq = ++renderSeq;
   if (S.cleanup){ try { S.cleanup(); } catch(e){} S.cleanup = null; }
   const V = VIEWS[S.view] || VIEWS.loading;
+  /* Si se repinta la misma pantalla (añadir serie, ejercicio, comida...), se conservan el desplazamiento,
+     los desplegables abiertos y el campo en el que se estaba escribiendo. */
+  const same = !S.nav && S.lastView === S.view; S.nav = false; S.lastView = S.view;
+  const keep = same ? {y: window.scrollY, open: [...document.querySelectorAll('#app details')].map(d => d.open),
+    path: document.activeElement?.dataset?.path, sel: document.activeElement?.selectionStart} : null;
   let html;
   try { html = await V(); }
   catch(e){ console.error(e); html = shell('Error', `<div class="card"><b>Algo ha fallado</b><p class="muted small">${esc(e.message || e)}</p><button class="btn" data-act="home">Volver al inicio</button></div>`); }
   if (seq !== renderSeq) return;
   $('#app').innerHTML = html;
+  if (keep){
+    const ds = [...document.querySelectorAll('#app details')]; if (ds.length === keep.open.length) ds.forEach((d, i) => { d.open = keep.open[i]; });
+    window.scrollTo(0, keep.y);
+    if (keep.path){ const el = document.querySelector(`#app [data-path="${CSS.escape(keep.path)}"]`); if (el){ el.focus({preventScroll: true}); try { if (keep.sel != null) el.setSelectionRange(keep.sel, keep.sel); } catch(e){} } }
+  }
   document.body.classList.toggle('no-tabs', !$('#app .tabs'));
   const segOn = $('#app .seg button.on'); if (segOn && segOn.parentElement.scrollWidth > segOn.parentElement.clientWidth) segOn.parentElement.scrollLeft = segOn.offsetLeft - 40;
   V.mount && V.mount();
@@ -949,19 +959,21 @@ async function loadClient(id){
 VIEWS.client = async () => {
   const tab = S.p.tab || 'summary';
   const {c, plans, nuts, logs, mets} = await loadClient(S.p.id);
+  S.cache.client = c;
   await refreshSettings(); const bl = await api.billing(c.id).catch(() => null); S.rules = S.rules || {}; S.rules[c.id] = planRule(progOf(c.id, bl?.plan_name));
   const tr = trainingFor(c.id);
   const tabs = [['summary','Resumen'],['program','Programa'],['health','Salud'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['chat','Mensajes'],['pay','Pagos'],['info','Ficha']].filter(t => tr || t[0] !== 'train');
-  let body = '';
-  if (tab === 'summary'){ const h = await healthData(c.id); body = summaryHTML(c, plans, nuts, logs, mets) + healthSummaryHTML(h.link, h.days); }
-  if (tab === 'health'){ const h = await healthData(c.id); body = healthCoachHTML(c, h.link, h.days); }
+  let body = '', miss = [];
+  const soft = (p, what, dflt) => p.catch(e => { console.warn(e); miss.push(what); return dflt; });
+  if (tab === 'summary'){ const h = await soft(healthData(c.id), 'salud', {}); body = summaryHTML(c, plans, nuts, logs, mets) + healthSummaryHTML(h.link, h.days); }
+  if (tab === 'health'){ const h = await soft(healthData(c.id), 'salud', {}); body = healthCoachHTML(c, h.link, h.days); }
   if (tab === 'train' || tab === 'food'){
-    const docs = await api.docs(c.id).catch(() => []); const urls = await api.fileUrls(docs.map(d => d.path)).catch(() => ({}));
+    const docs = await soft(api.docs(c.id), 'documentos', []); const urls = await soft(api.fileUrls(docs.map(d => d.path)), 'enlaces de documentos', {});
     S.cache.docs = docs;
     body = tab === 'train' ? plansListHTML(c, plans, 'plan') + docsHTML(docs, urls, 'entreno', true) : plansListHTML(c, nuts, 'nut') + docsHTML(docs, urls, 'alimentacion', true);
   }
   if (tab === 'progress'){
-    const photos = await api.photos(c.id).catch(() => []); const urls = await api.fileUrls(photos.map(p => p.path)).catch(() => ({}));
+    const photos = await soft(api.photos(c.id), 'fotos', []); const urls = await soft(api.fileUrls(photos.map(p => p.path)), 'fotos', {});
     S.cache.photos = photos; S.cache.urls = urls;
     body = progressHTML(c, logs, mets, true, photos, urls);
   }
@@ -971,12 +983,13 @@ VIEWS.client = async () => {
     body = chatHTML(msgs);
   }
   if (tab === 'pay'){
-    const [b, pays] = await Promise.all([api.billing(c.id).catch(() => null), api.payments(c.id).catch(() => [])]);
+    const [b, pays] = await Promise.all([soft(api.billing(c.id), 'estado de pago', null), soft(api.payments(c.id), 'historial de pagos', [])]);
     S.cache.billing = b; body = coachPayHTML(c, b, pays);
   }
   if (tab === 'info') body = clientInfoHTML(c, (await welcomeText()).mode);
   if (tab === 'program') body = programHTML(c, bl);
   return shell(c.full_name || c.email, `
+    ${miss.length ? `<div class="card cream small" style="margin-bottom:10px">No se ha podido cargar: ${esc([...new Set(miss)].join(', '))}. Revisa la conexión y vuelve a entrar.</div>` : ''}
     <div class="seg" style="margin-bottom:12px">${tabs.map(([k,l]) => `<button class="${tab === k ? 'on' : ''}" data-act="ctab" data-v="${k}">${l}${k === 'chat' ? ` <span class="cnt hidden" data-badge="${esc(c.id)}"></span>` : ''}</button>`).join('')}</div>
     ${body}`, {backBtn: true, sub: c.status === 'pending' ? 'Pendiente de activar' : (tr ? '' : 'Solo nutrición · ') + (c.goal || 'Cliente')});
 };
@@ -991,13 +1004,27 @@ function programHTML(c, bill){
   </div>
   <p class="tiny muted" style="margin:8px 2px 0">Si con este cliente quieres otra frecuencia de check-in o cambiar lo de solo nutrición, hazlo en su Ficha: lo que pongas allí manda sobre el programa.</p>`;
 }
+function lastCheckinHTML(c, mets){
+  const ck = [...mets].reverse().find(isCheckin); if (!ck) return '';
+  const prev = [...mets].reverse().find(m => m.date < ck.date && m.weight_kg != null);
+  const dw = ck.weight_kg != null && prev ? num(ck.weight_kg) - num(prev.weight_kg) : null;
+  const sc = [['Sueño', ck.sleep], ['Estrés', ck.stress], ['Energía', ck.energy]].filter(x => x[1] != null).map(([l, v]) => `${l} ${v}/5`).join(' · ');
+  const w = checkinWindow(c.id), due = ck.date < w.start;
+  return `<div class="sec-title">Última revisión</div><div class="card stack">
+    <div class="row between"><b>${esc(cap(fmtDate(ck.date, {weekday:'long', day:'numeric', month:'long'})))}</b><span class="ck-tag ${due ? '' : 'ok'}">${due ? 'Toca nueva' : 'Al día'}</span></div>
+    <div class="small">${[ck.weight_kg != null && `Peso ${fmtNum(num(ck.weight_kg))} kg${dw != null ? ` (${dw === 0 ? '±0' : sign(dw)})` : ''}`, ck.waist_cm != null && `Cintura ${fmtNum(num(ck.waist_cm))} cm`, ck.hip_cm != null && `Cadera ${fmtNum(num(ck.hip_cm))} cm`].filter(Boolean).join(' · ')}</div>
+    ${sc ? `<div class="small muted">${esc(sc)}</div>` : ''}
+    ${ck.notes ? `<div class="exnote">${esc(ck.notes).replace(/\n/g, '<br>')}</div>` : ''}
+    <button class="btn gold" data-act="replyCheckin">${icon('chat')} Responder con el ajuste</button>
+  </div>`;
+}
 function summaryHTML(c, plans, nuts, logs, mets){
   const ws = mets.filter(m => m.weight_kg != null);
   const cur = ws.at(-1), first = ws[0];
   const diff = cur && first && cur !== first ? cur.weight_kg - first.weight_kg : null;
   const n28 = logs.filter(l => daysAgo(l.date) <= 28).length;
   const activePlan = plans.find(p => p.active), activeNut = nuts.find(n => n.active), tr = trainingFor(c.id);
-  return `
+  return `${lastCheckinHTML(c, mets)}
     ${c.status === 'pending' ? `<div class="card cream row between"><div><b>Cuenta pendiente</b><div class="small muted">Actívala para que pueda usar la app.</div></div><button class="btn gold sm" data-act="activate" data-id="${esc(c.id)}">Activar</button></div>` : ''}
     <div class="stats" style="margin-top:${c.status === 'pending' ? 12 : 0}px">
       <div class="stat"><small>Peso actual</small><b>${cur ? fmtNum(cur.weight_kg) : '-'}</b>${cur ? '<i>kg</i>' : ''}${diff != null ? `<i class="${diff > 0 ? 'up' : diff < 0 ? 'down' : ''}">${diff === 0 ? '±0' : sign(diff)} kg</i>` : ''}</div>
@@ -1368,7 +1395,7 @@ VIEWS.train = async () => {
           ${exTip(x.name) ? `<div class="extip">${esc(exTip(x.name))}</div>` : ''}
           ${coachNote(x) ? `<div class="exnote"><b>Nota del coach:</b> ${esc(coachNote(x))}</div>` : ''}
           ${x.video ? `<div class="vids">${videoLinks(x.video, x.name)}</div>` : ''}</div>`).join('')}</details>
-        <button class="btn block ${i === nextIdx ? 'gold' : 'light'}" style="margin-top:10px" data-act="startDay" data-d="${i}" data-notes="${esc(d.notes || '')}">${icon('play', true)} Empezar</button>
+        <button class="btn block ${i === nextIdx ? 'gold' : 'light'}" style="margin-top:10px" data-act="startDay" data-d="${i}">${icon('play', true)} Empezar</button>
       </div></div>`; }).join('')}</div>
     ${docBlock}
     <div class="sec-title">Historial</div>${logsListHTML(logs.slice(0, 6))}
@@ -1398,7 +1425,7 @@ VIEWS.today = async () => {
     trainCard = `<div class="card dcard next"><div class="dhead"><h3>${esc(d.name)}</h3><span class="badge tt">${doneToday ? 'El siguiente' : 'Te toca'}</span></div><div class="dbody">
       <div class="small muted">${d.exercises.length} ejercicios${doneToday ? '. Hoy ya has entrenado: ¡bien hecho!' : ''}</div>
       <div class="target">${d.exercises.slice(0, 4).map(x => `<span class="chip">${esc(x.name || 'Ejercicio')}</span>`).join('')}${d.exercises.length > 4 ? `<span class="chip">+${d.exercises.length - 4}</span>` : ''}</div>
-      <button class="btn block gold" style="margin-top:10px" data-act="startDay" data-d="${i}" data-notes="${esc(d.notes || '')}">${icon('play', true)} Empezar entreno</button></div></div>`;
+      <button class="btn block gold" style="margin-top:10px" data-act="startDay" data-d="${i}">${icon('play', true)} Empezar entreno</button></div></div>`;
   }
   const hd = (h.days || []).find(x => x.day === today());
   const goal = parseInt((S.settings || {}).steps_goal, 10) || 10000;
@@ -1476,7 +1503,7 @@ VIEWS.session = async () => {
   if (!S.draft){
     const {plan, logs} = await myData();
     const day = plan.days[S.p.dayIdx];
-    S.draft = {id: uid(), client_id: S.me.id, plan_id: plan.id, day_name: day.name, date: today(), rpe: null, notes: '',
+    S.draft = {id: uid(), client_id: S.me.id, plan_id: plan.id, day_name: day.name, _dayNotes: day.notes || '', date: today(), rpe: null, notes: '',
       entries: day.exercises.map(x => {
         const last = lastFor(logs, x.name);
         const n = Math.max(1, parseInt(x.sets) || (last ? last.sets.length : 3));
@@ -1484,7 +1511,7 @@ VIEWS.session = async () => {
       })};
   }
   const s = S.draft;
-  const dayNotes = S.p.dayNotes || '';
+  const dayNotes = s._dayNotes || '';
   return shell(s.day_name, `
     ${dayNotes ? `<div class="card cream small" style="margin-bottom:10px">${esc(dayNotes).replace(/\n/g, '<br>')}</div>` : ''}
     <label class="f" style="margin-bottom:10px">Fecha<input class="in" type="date" data-path="date" value="${esc(s.date)}"></label>
@@ -1525,9 +1552,13 @@ VIEWS.food = async () => {
   const [{nut}, docs] = await Promise.all([myData(), api.docs(S.me.id).catch(() => [])]);
   const durls = await api.fileUrls(docs.map(d => d.path)).catch(() => ({}));
   const docBlock = docsHTML(docs, durls, 'alimentacion', false);
-  return shell('Alimentación', (nut || !docBlock ? nutritionViewHTML(nut) : '') + docBlock, {tabs: clientTabs('food'), sub: CFG.BRAND});
+  return shell('Alimentación', (nut || !docBlock ? nutritionViewHTML(nut, true) : '') + docBlock, {tabs: clientTabs('food'), sub: CFG.BRAND});
 };
-function nutritionViewHTML(nut){
+/* Opción elegida en cada comida, por día, guardada en el móvil del cliente */
+const pickKey = () => `jpr-picks-${S.me?.id}-${today()}`;
+const picksGet = () => { try { return JSON.parse(localStorage.getItem(pickKey()) || '{}'); } catch(e){ return {}; } };
+function nutritionViewHTML(nut, canPick = false){
+  const picks = canPick ? picksGet() : {};
   if (!nut) return empty('Todavía no tienes plan de alimentación', `${firstName(CFG.COACH_NAME) || 'Tu coach'} te lo preparará pronto.`);
   const g = (nut.guidelines || '').split('\n').filter(s => s.trim());
   return `<h2 style="margin-bottom:10px">${esc(nut.name)}</h2>
@@ -1537,9 +1568,9 @@ function nutritionViewHTML(nut){
       <div class="macro"><b>${nut.carbs_g ? esc(nut.carbs_g) + '<i>g</i>' : '-'}</b><small>hidratos</small></div>
       <div class="macro"><b>${nut.fat_g ? esc(nut.fat_g) + '<i>g</i>' : '-'}</b><small>grasa</small></div></div>` : ''}
     ${nut.water_l ? `<p class="small muted" style="margin:8px 2px 0">Agua: ${fmtNum(num(nut.water_l))} L al día.</p>` : ''}
-    <p class="small" style="margin:12px 2px 0">Elige <b>una opción</b> en cada comida. Puedes cambiarlas entre sí cuando quieras.</p>
-    ${nut.meals.map(m => `<div class="sec-title">${esc(m.name)}${m.time ? `<span class="r muted">${esc(m.time)}</span>` : ''}</div>
-      <div class="meal">${(m.options || []).map((o, i) => `<div class="opt"><div class="k">${i + 1}</div><div class="v">${esc(o)}</div></div>`).join('') || '<div class="opt"><div class="k"></div><div class="v muted">Sin opciones todavía</div></div>'}
+    <p class="small" style="margin:12px 2px 0">Elige <b>una opción</b> en cada comida. Puedes cambiarlas entre sí cuando quieras.${canPick ? ' Toca la que vas a comer hoy y te la marco.' : ''}</p>
+    ${nut.meals.map((m, mi) => `<div class="sec-title">${esc(m.name)}${m.time ? `<span class="r muted">${esc(m.time)}</span>` : ''}</div>
+      <div class="meal">${(m.options || []).map((o, i) => `<div class="opt ${canPick ? 'pick' : ''} ${picks[mi] === i ? 'on' : ''}" ${canPick ? `data-act="mealPick" data-m="${mi}" data-o="${i}"` : ''}><div class="k">${picks[mi] === i ? icon('check') : i + 1}</div><div class="v">${esc(o)}</div></div>`).join('') || '<div class="opt"><div class="k"></div><div class="v muted">Sin opciones todavía</div></div>'}
       ${m.notes ? `<div class="opt special"><div class="k">!</div><div class="v"><b>${esc(m.notes)}</b></div></div>` : ''}</div>`).join('')}
     ${g.length ? `<div class="sec-title">Pautas y notas generales</div><div class="card"><ul style="margin:0;padding-left:18px">${g.map(x => `<li style="margin:4px 0">${esc(x.replace(/^[-•●]\s*/, ''))}</li>`).join('')}</ul></div>` : ''}`;
 }
@@ -1795,6 +1826,7 @@ function appendMsg(m){
 function mountChat(cid){
   const f = $('#fChat'); if (!f) return;
   const ta = f.querySelector('textarea');
+  if (S.chatPrefill){ ta.value = S.chatPrefill; S.chatPrefill = null; setTimeout(() => { ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; ta.focus(); ta.setSelectionRange(ta.value.indexOf('Lo que veo: ') + 12, ta.value.indexOf('Lo que veo: ') + 12); }, 50); }
   window.scrollTo(0, document.body.scrollHeight);
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; };
   ta.addEventListener('input', grow);
@@ -2256,7 +2288,7 @@ const ACT = {
   nav: el => go(el.dataset.v, {}, false),
   tab: el => { S.stack = []; go(el.dataset.v, {}, false); },
   async demoLogin(el){ await api.signIn(el.dataset.id); await boot(); },
-  async logout(){ if (!(await confirmBox('Cerrar sesión', '¿Seguro que quieres salir?', 'Salir'))) return; S.unsub && S.unsub(); S.unsub = null; S.unread = {}; await api.signOut(); S.me = null; S.stack = []; go('login', {}, false); },
+  async logout(){ if (!(await confirmBox('Cerrar sesión', '¿Seguro que quieres salir?', 'Salir'))) return; S.unsub && S.unsub(); S.unsub = null; S.unread = {}; restTimer(0); if (S.cleanup){ try { S.cleanup(); } catch(e){} S.cleanup = null; } S.cache = {}; S.rules = {}; S.myRule = null; S.draft = null; await api.signOut(); S.me = null; S.stack = []; go('login', {}, false); },
   async resetDemo(){ if (!(await confirmBox('Reiniciar demo', 'Se borrarán los cambios y vuelven los datos de ejemplo.', 'Reiniciar', true))) return; api.reset(); toast('Demo reiniciada'); render(); },
   privacy: () => modal(PRIVACY_HTML + '<button class="btn block" data-x="ok" style="margin-top:12px">Cerrar</button>', (m, close) => m.querySelector('[data-x=ok]').onclick = close),
   copyLink: async () => { try { await navigator.clipboard.writeText(location.origin + location.pathname); toast('Enlace copiado'); } catch(e){ toast('Mantén pulsado el enlace para copiarlo'); } },
@@ -2342,7 +2374,7 @@ const ACT = {
   },
 
   // Cliente
-  startDay: el => go('session', {dayIdx: +el.dataset.d, dayNotes: el.dataset.notes || ''}),
+  startDay: el => go('session', {dayIdx: +el.dataset.d}),
   setDone: el => {
     const st = S.draft.entries[el.dataset.e].sets[el.dataset.s];
     st._done = !st._done;
@@ -2373,6 +2405,16 @@ const ACT = {
   },
   metricNew: () => go('metricNew'),
   checkinNew: () => go('checkin'),
+  replyCheckin(){
+    S.chatPrefill = `Hola ${firstName(S.cache.client?.full_name) || ''}, he revisado tu check-in.\n\nLo que veo: \n\nAjuste para estas semanas: \n\n`.replace('Hola ,', 'Hola,');
+    S.p = {...S.p, tab: 'chat'}; render();
+  },
+  mealPick(el){
+    const p = picksGet(), m = el.dataset.m, o = +el.dataset.o;
+    if (p[m] === o) delete p[m]; else p[m] = o;
+    try { localStorage.setItem(pickKey(), JSON.stringify(p)); } catch(e){}
+    el.parentElement.querySelectorAll('.opt.pick').forEach(x => { const on = x === el && p[m] === o; x.classList.toggle('on', on); x.querySelector('.k').innerHTML = on ? icon('check') : (+x.dataset.o + 1); });
+  },
   async progSave(){
     const box = $('#progBox'), v = box.querySelector('input[name=prog]:checked')?.value;
     const name = v === '__other' ? box.querySelector('[name=other]').value.trim() : v;
@@ -2514,7 +2556,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 25;
+const APP_VERSION = 26;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
