@@ -1,10 +1,10 @@
 // Sube este número cada vez que actualices la app.
-const VERSION = 'jpr-v17';
+const VERSION = 'jpr-v18';
 const FILES = ['./', './index.html', './app.js', './config.js', './vendor/supabase.js', './manifest.webmanifest',
   './assets/logo-light.png', './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png',
   './fonts/archivo-latin-wdth-normal.woff2', './fonts/archivo-latin-wdth-italic.woff2', './assets/logo-mark.png'];
 
-self.addEventListener('install', e => e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting())));
+self.addEventListener('install', e => e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES.map(f => new Request(f, {cache: 'reload'})))).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(
   caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim())));
 
