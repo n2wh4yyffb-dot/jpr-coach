@@ -547,12 +547,65 @@ const e1rm = s => s && s.kg ? s.kg * (1 + (s.reps || 1) / 30) : null;
 const volume = log => (log.entries || []).reduce((a, e) => a + (e.sets || []).reduce((b, s) => b + (num(s.kg) || 0) * (num(s.reps) || 0), 0), 0);
 // Repeticiones objetivo de la serie i: "15/12/10/8" da 15, 12, 10, 8
 const repsFor = (t, i) => { const rs = String(t?.reps || '').split('/'); return parseInt(rs[Math.min(i, rs.length - 1)]) || ''; };
+/* Explicación corta de cada ejercicio. Se busca por palabras del nombre (de más concreto a más general).
+   Si el coach escribe sus notas de técnica, salen además como "Nota del coach". */
+const EX_TIPS = [
+  [/bulgara/, 'Pie de atrás apoyado en un banco. Baja en vertical hasta que la rodilla de atrás casi toque el suelo y sube empujando con el talón de la pierna de delante.'],
+  [/sentadilla frontal|front squat/, 'Barra apoyada delante, sobre los hombros, con los codos altos. Baja con el tronco lo más vertical posible y sube sin dejar caer los codos.'],
+  [/sumo/, 'Pies más abiertos que los hombros y puntas hacia fuera. Baja con la espalda recta empujando las rodillas hacia fuera y sube apretando el glúteo.'],
+  [/sentadilla|squat|goblet/, 'Pies a la anchura de los hombros. Baja con el pecho alto y las rodillas en la línea de los pies, hasta donde mantengas la espalda recta, y sube empujando el suelo.'],
+  [/prensa/, 'Pies a media altura de la plataforma. Baja controlando sin que la cadera se despegue del respaldo y empuja sin bloquear del todo las rodillas.'],
+  [/rumano|piernas rigidas/, 'Rodillas un poco flexionadas y fijas. Lleva la cadera atrás bajando el peso pegado a las piernas hasta notar el femoral estirado y sube apretando el glúteo.'],
+  [/peso muerto/, 'Barra pegada a las espinillas, espalda recta y pecho fuera. Empuja el suelo con las piernas y estira la cadera al final sin echar el tronco hacia atrás.'],
+  [/good morning|buenos dias/, 'Barra en la espalda y rodillas un poco flexionadas. Lleva la cadera atrás con la espalda recta hasta notar el femoral y sube apretando el glúteo.'],
+  [/hip thrust/, 'Espalda alta apoyada en el banco y peso sobre la cadera. Sube hasta dejar el cuerpo recto de rodillas a hombros, aprieta el glúteo 1 segundo arriba y baja controlando.'],
+  [/puente|elevacion(es)? de cadera/, 'Tumbado boca arriba con los pies cerca del culo. Sube la cadera apretando el glúteo, aguanta 1 segundo arriba y baja despacio.'],
+  [/zancada|lunge|split/, 'Paso largo y baja en vertical hasta que la rodilla de atrás casi toque el suelo. La rodilla de delante va en la línea del pie. Sube empujando con el talón.'],
+  [/step/, 'Sube al banco apoyando el pie entero y empuja con esa pierna, sin impulsarte con la de abajo. Baja controlando.'],
+  [/hiperextension|lumbar/, 'Cadera apoyada en el borde. Baja con la espalda recta y sube hasta dejar el cuerpo en línea apretando el glúteo, sin pasarte arriba.'],
+  [/extension de (cuadriceps|pierna)|cuadriceps/, 'Espalda pegada al respaldo. Estira las rodillas hasta arriba, aguanta 1 segundo y baja lento sin dejar caer el peso.'],
+  [/femoral|isquio/, 'Piernas bien sujetas en la máquina. Lleva los talones hacia el culo doblando las rodillas, aguanta 1 segundo y vuelve lento.'],
+  [/patada|kickback/, 'Tronco quieto y abdomen firme. Lleva la pierna hacia atrás y arriba apretando el glúteo, sin arquear la zona lumbar, y vuelve controlando.'],
+  [/abduc|abiertas/, 'Espalda apoyada y movimiento controlado. Abre las piernas empujando con la parte de fuera del glúteo, aguanta 1 segundo fuera y cierra despacio.'],
+  [/aduc|cerradas/, 'Cierra las piernas apretando la cara interna del muslo, aguanta 1 segundo y abre despacio sin dejar que el peso tire de ti.'],
+  [/gemelo|pantorrilla|talones/, 'Sube de puntillas todo lo que puedas, aguanta 1 segundo arriba y baja hasta notar el gemelo estirado.'],
+  [/cinta|bici|eliptica|ergometro|caminar|andar|cardio|carrera|correr/, 'Ritmo constante que te deje hablar con frases cortas, salvo que el plan diga otra cosa.'],
+  [/inclinad/, 'Banco a unos 30 grados. Escápulas juntas y hacia abajo. Baja hasta la parte alta del pecho y empuja sin despegar los glúteos del banco.'],
+  [/press (de )?banca|press de pecho|press plano|press con mancuernas|chest press/, 'Escápulas juntas y hacia abajo, pies firmes en el suelo. Baja controlando hasta el pecho y empuja sin rebotar.'],
+  [/fondos|dips/, 'Tronco un poco inclinado hacia delante. Baja hasta que los codos lleguen a unos 90 grados y empuja hasta estirar los brazos.'],
+  [/flexion/, 'Cuerpo recto de cabeza a talones y manos algo más abiertas que los hombros. Baja el pecho cerca del suelo y empuja sin hundir la cadera.'],
+  [/apertura|cruce|pec ?deck|contractor/, 'Codos un poco doblados y fijos. Abre hasta notar el pecho estirado y cierra como si abrazaras un árbol.'],
+  [/plancha lateral|side plank/, 'Apoyado en el antebrazo, cuerpo recto de cabeza a pies y cadera alta. Aguanta sin dejar que la cadera caiga.'],
+  [/plancha|plank/, 'Antebrazos bajo los hombros, cuerpo recto y glúteo apretado. Aguanta sin hundir ni subir la cadera.'],
+  [/face pull/, 'Cuerda a la altura de la cara. Tira hacia la frente separando las manos y abriendo los codos, aprieta la espalda alta y vuelve controlando.'],
+  [/pajaro|posterior|reverse fly/, 'Tronco inclinado y espalda recta. Abre los brazos hacia los lados juntando las escápulas, sin subir los hombros, y baja controlando.'],
+  [/lateral/, 'Codos un poco doblados. Sube los brazos hacia los lados hasta la altura de los hombros sin balancear el cuerpo y baja despacio.'],
+  [/frontal/, 'Sube el peso por delante hasta la altura de los hombros sin balancearte y baja despacio.'],
+  [/press militar|press de hombro|press hombro|arnold|shoulder press/, 'Abdomen y glúteo apretados para no arquear la espalda. Empuja por encima de la cabeza hasta estirar los brazos y baja hasta la altura de la barbilla.'],
+  [/dominada|pull ?up|chin/, 'Agarre algo más abierto que los hombros. Tira llevando el pecho hacia la barra y los codos hacia abajo, y baja hasta casi estirar los brazos.'],
+  [/jalon|pulldown/, 'Pecho fuera y algo inclinado hacia atrás. Lleva la barra a la parte alta del pecho tirando con los codos hacia abajo y sube controlando hasta estirar los brazos.'],
+  [/remo|row/, 'Espalda recta y abdomen firme. Tira llevando los codos hacia atrás pegados al cuerpo, junta las escápulas al final y vuelve controlando.'],
+  [/pullover/, 'Brazos casi estirados. Lleva el peso hacia atrás por encima de la cabeza hasta notar el dorsal estirado y vuelve tirando con la espalda.'],
+  [/martillo|hammer/, 'Palmas mirándose entre sí y codos pegados al cuerpo. Sube sin balancearte y baja despacio.'],
+  [/curl|biceps/, 'Codos pegados al cuerpo y quietos. Sube sin balancear el tronco, aprieta arriba y baja lento hasta estirar el brazo.'],
+  [/frances/, 'Codos fijos apuntando al techo. Baja el peso hacia la frente doblando solo los codos y vuelve a estirar.'],
+  [/triceps|extension/, 'Codos pegados y quietos. Estira los brazos del todo apretando el tríceps y vuelve controlando sin mover los hombros.'],
+  [/rueda/, 'Desde rodillas y con el abdomen apretado, rueda hacia delante sin arquear la zona lumbar y vuelve tirando con el abdomen.'],
+  [/pallof/, 'De lado a la polea y con los brazos al pecho. Estira los brazos al frente sin dejar que el cable te gire el tronco, aguanta y vuelve.'],
+  [/crunch|encogimiento|abdominal|elevacion(es)? de piernas/, 'Enrolla el tronco llevando las costillas hacia la cadera, sin tirar del cuello, y vuelve despacio.'],
+  [/swing|kettlebell/, 'El movimiento sale de la cadera, no de los brazos. Lleva la pesa entre las piernas con la espalda recta y empuja la cadera adelante apretando el glúteo.'],
+  [/farmer|granjero|paseo/, 'Peso en cada mano, hombros atrás y abdomen firme. Camina con pasos cortos sin inclinarte hacia ningún lado.'],
+];
+const normEx = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const exTip = name => { const n = normEx(name); return (EX_TIPS.find(([re]) => re.test(n)) || [])[1] || ''; };
+const coachNote = t => { const n = String(t?.notes || '').trim(); return n && !/^ver( el)?( video)?\.?$/i.test(normEx(n)) ? n : ''; };
+
 /* Vídeos de ejercicios: YouTube y archivos de vídeo se ven dentro de la app; el resto se abre fuera */
 const ytId = u => { const m = String(u).match(/(?:youtube\.com\/(?:shorts\/|embed\/|live\/|watch\?(?:.*&)?v=)|youtu\.be\/)([\w-]{11})/i); return m ? m[1] : null; };
 const isVidFile = u => /\.(mp4|mov|m4v|webm)(\?|#|$)/i.test(u);
-const videoLinks = v => String(v || '').split(/\s+/).filter(u => /^https?:\/\//i.test(u)).map((u, i, a) => {
+const videoLinks = (v, title = '') => String(v || '').split(/\s+/).filter(u => /^https?:\/\//i.test(u)).map((u, i, a) => {
   const label = `${icon('play', true)} ${a.length > 1 ? `Vídeo ${i + 1}` : 'Ver vídeo'}`;
-  return ytId(u) || isVidFile(u) ? `<button type="button" class="vid" data-act="playVid" data-url="${esc(u)}">${label}</button>` : `<a class="vid" href="${esc(u)}" target="_blank" rel="noopener">${label}</a>`;
+  return ytId(u) || isVidFile(u) ? `<button type="button" class="vid" data-act="playVid" data-url="${esc(u)}" data-title="${esc(title)}">${label}</button>` : `<a class="vid" href="${esc(u)}" target="_blank" rel="noopener">${label}</a>`;
 }).join('');
 function playVideo(u, title = ''){
   const id = ytId(u), vertical = /\/shorts\//i.test(u);
@@ -1151,7 +1204,7 @@ VIEWS.planEdit = async () => {
             <div class="grid4" style="grid-template-columns:.7fr 1.5fr .7fr 1fr 1fr">
               ${[['sets','Series'],['reps','Reps'],['rir','RIR'],['rest','Descanso'],['load','Carga']].map(([k,l]) => `<div><div class="lbl">${l}</div><input class="in" data-path="days.${di}.exercises.${xi}.${k}" value="${esc(x[k])}"></div>`).join('')}
             </div>
-            <input class="in" data-path="days.${di}.exercises.${xi}.notes" value="${esc(x.notes)}" placeholder="Notas de técnica (opcional)" style="font-size:14px;padding:9px 10px">
+            <input class="in" data-path="days.${di}.exercises.${xi}.notes" value="${esc(x.notes)}" placeholder="${esc(exTip(x.name) ? 'Explicación automática: ' + exTip(x.name) : 'Notas de técnica (opcional)')}" style="font-size:14px;padding:9px 10px">
             <input class="in" type="url" data-path="days.${di}.exercises.${xi}.video" value="${esc(x.video || '')}" placeholder="Enlace del vídeo (opcional)" style="font-size:14px;padding:9px 10px;margin-top:6px">
           </div>`).join('')}
         <textarea class="in" data-path="days.${di}.notes" rows="2" placeholder="Notas del día: cardio, core, avisos (opcional)" style="font-size:14px;margin:8px 0 0">${esc(d.notes || '')}</textarea>
@@ -1244,11 +1297,16 @@ VIEWS.train = async () => {
     ${plan.notes ? `<div class="card cream small prose" style="margin-bottom:10px">${esc(plan.notes)}</div>` : ''}
     <div class="list">${plan.days.map((d, i) => {
       const last = logs.find(l => l.plan_id === plan.id && l.day_name === d.name);
-      return `<div class="card tap dcard ${i === nextIdx ? 'next' : ''}" data-act="startDay" data-d="${i}" data-notes="${esc(d.notes || '')}">
+      return `<div class="card dcard ${i === nextIdx ? 'next' : ''}">
         <div class="dhead"><h3>${esc(d.name)}</h3>${i === nextIdx ? '<span class="badge tt">Te toca</span>' : ''}</div><div class="dbody">
         <div class="small muted">${d.exercises.length} ejercicios. ${last ? `Último: ${relDate(last.date)}` : 'Sin hacer todavía'}</div>
         <div class="target">${d.exercises.slice(0, 4).map(x => `<span class="chip">${esc(x.name || 'Ejercicio')}</span>`).join('')}${d.exercises.length > 4 ? `<span class="chip">+${d.exercises.length - 4}</span>` : ''}</div>
-        <button class="btn block ${i === nextIdx ? 'gold' : 'light'}" style="margin-top:10px">${icon('play', true)} Empezar</button>
+        <details class="exlist"><summary>Ver ejercicios, vídeos y cómo se hacen</summary>${d.exercises.map(x => `<div class="exrow">
+          <div class="row between" style="gap:8px;align-items:flex-start"><b>${esc(x.name || 'Ejercicio')}</b><span class="tiny muted" style="white-space:nowrap">${[x.sets && `${esc(x.sets)} x ${esc(x.reps || '-')}`, x.rir && `RIR ${esc(x.rir)}`, restOf(x, d.name) && `desc. ${mmss(restOf(x, d.name))}`].filter(Boolean).join(' · ')}</span></div>
+          ${exTip(x.name) ? `<div class="extip">${esc(exTip(x.name))}</div>` : ''}
+          ${coachNote(x) ? `<div class="exnote"><b>Nota del coach:</b> ${esc(coachNote(x))}</div>` : ''}
+          ${x.video ? `<div class="vids">${videoLinks(x.video, x.name)}</div>` : ''}</div>`).join('')}</details>
+        <button class="btn block ${i === nextIdx ? 'gold' : 'light'}" style="margin-top:10px" data-act="startDay" data-d="${i}" data-notes="${esc(d.notes || '')}">${icon('play', true)} Empezar</button>
       </div></div>`; }).join('')}</div>
     ${docBlock}
     <div class="sec-title">Historial</div>${logsListHTML(logs.slice(0, 6))}
@@ -1371,8 +1429,9 @@ VIEWS.session = async () => {
       return `<div class="exs">
         <div class="exs-head"><b>${esc(e.exercise)}</b>
           <div class="target">${t.sets ? `<span class="chip">${esc(t.sets)} series</span>` : ''}${t.reps ? `<span class="chip">${esc(t.reps)}${/^\d+(\s*[-/]\s*\d+)*$/.test(String(t.reps).trim()) ? ' reps' : ''}</span>` : ''}${t.rir ? `<span class="chip">RIR ${esc(t.rir)}</span>` : ''}${restOf(t, s.day_name) ? `<span class="chip rest">${icon('clock')} Descanso ${mmss(restOf(t, s.day_name))}</span>` : t.rest ? `<span class="chip">${esc(t.rest)}</span>` : ''}${t.load ? `<span class="chip gold">${esc(t.load)}</span>` : ''}</div>
-          ${t.notes ? `<div class="small muted" style="margin-top:6px">${esc(t.notes)}</div>` : ''}
-          ${t.video ? `<div class="vids">${videoLinks(t.video)}</div>` : ''}
+          ${exTip(e.exercise) ? `<div class="extip">${esc(exTip(e.exercise))}</div>` : ''}
+          ${coachNote(t) ? `<div class="exnote"><b>Nota del coach:</b> ${esc(coachNote(t))}</div>` : ''}
+          ${t.video ? `<div class="vids">${videoLinks(t.video, e.exercise)}</div>` : ''}
           ${e._last ? `<div class="tiny muted" style="margin-top:4px">"Anterior" es lo que hiciste ${esc(relDate(e._last.date))}.</div>` : ''}
         </div>
         <div class="set-head"><span>Serie</span><span>Anterior</span><span>Kg</span><span>Reps</span><span>RIR</span><span></span></div>
@@ -2249,7 +2308,7 @@ const ACT = {
   },
   metricNew: () => go('metricNew'),
   checkinNew: () => go('checkin'),
-  playVid: el => playVideo(el.dataset.url, el.closest('.exs')?.querySelector('.exs-head b')?.textContent || ''),
+  playVid: el => playVideo(el.dataset.url, el.dataset.title || el.closest('.exs')?.querySelector('.exs-head b')?.textContent || ''),
   async checkinSave(el){
     const d = S.draft, K = ['weight_kg','waist_cm','hip_cm','body_fat','visceral_fat','muscle_kg','chest_cm','arm_cm','thigh_cm'];
     const m = {id: d.id, client_id: d.client_id, date: d.date, sleep: d.sleep, stress: d.stress, energy: d.energy};
@@ -2381,7 +2440,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 19;
+const APP_VERSION = 20;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
