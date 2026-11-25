@@ -265,6 +265,9 @@ function SupabaseAPI(){
     lastReminder: cid => sb.from('health_reminders').select('*').eq('client_id', cid).order('day', {ascending: false}).limit(1).maybeSingle().then(ok),
     async pushTest(){ const {data, error} = await sb.functions.invoke('steps-reminder', {body: {test: true}}); if (error) throw new Error('No se ha podido enviar el aviso de prueba'); return data; },
     // Salud del iPhone
+    // Opción elegida en cada comida (una fila por cliente y día)
+    mealPicks: (cid, n = 14) => sb.from('meal_picks').select('*').eq('client_id', cid).gte('day', isoDaysAgo(n)).order('day', {ascending: false}).then(ok),
+    mealPickSave: (cid, day, picks, nutId) => sb.from('meal_picks').upsert({client_id: cid, day, picks, nutrition_id: nutId || null, updated_at: new Date().toISOString()}, {onConflict: 'client_id,day'}).then(ok),
     healthLink: cid => sb.from('health_links').select('*').eq('client_id', cid).maybeSingle().then(ok),
     async healthConnect(cid, metrics){ return ok(await sb.from('health_links').insert({client_id: cid, token: newToken(), metrics, consent_version: HEALTH_CONSENT_V}).select().single()); },
     healthSetMetrics: (cid, metrics) => sb.from('health_links').update({metrics}).eq('client_id', cid).select().single().then(ok),
@@ -389,6 +392,8 @@ function DemoAPI(){
     pushCount: cid => wait(cid === 'demo-ana' ? 1 : 0),
     lastReminder: cid => wait(cid === 'demo-ana' ? {day: isoDaysAgo(1), steps: 7420, goal: 10000, sent: 1} : null),
     async pushTest(){ return wait({ok: true}); },
+    mealPicks: (cid, n = 14) => wait((db.meal_picks || []).filter(x => x.client_id === cid && x.day >= isoDaysAgo(n)).sort((a, b) => b.day.localeCompare(a.day))),
+    async mealPickSave(cid, day, picks, nutId){ db.meal_picks = (db.meal_picks || []).filter(x => !(x.client_id === cid && x.day === day)); db.meal_picks.push({client_id: cid, day, picks, nutrition_id: nutId || null, updated_at: now()}); save(); return wait(true); },
     healthLink: cid => wait(db.health_links.find(x => x.client_id === cid) || null),
     async healthConnect(cid, metrics){ db.health_links = db.health_links.filter(x => x.client_id !== cid); const r = {client_id: cid, token: newToken(), metrics, consent_version: HEALTH_CONSENT_V, consented_at: now(), last_sync_at: null, last_payload: null}; db.health_links.push(r); save(); hl(cid); return wait(r); },
     async healthSetMetrics(cid, metrics){ const r = db.health_links.find(x => x.client_id === cid); r.metrics = metrics; save(); hl(cid); return wait(r); },
@@ -968,9 +973,10 @@ VIEWS.client = async () => {
   if (tab === 'summary'){ const h = await soft(healthData(c.id), 'salud', {}); body = summaryHTML(c, plans, nuts, logs, mets) + healthSummaryHTML(h.link, h.days); }
   if (tab === 'health'){ const h = await soft(healthData(c.id), 'salud', {}); body = healthCoachHTML(c, h.link, h.days); }
   if (tab === 'train' || tab === 'food'){
+    const picks = tab === 'food' ? await soft(api.mealPicks(c.id, 14), 'comidas marcadas', []) : [];
     const docs = await soft(api.docs(c.id), 'documentos', []); const urls = await soft(api.fileUrls(docs.map(d => d.path)), 'enlaces de documentos', {});
     S.cache.docs = docs;
-    body = tab === 'train' ? plansListHTML(c, plans, 'plan') + docsHTML(docs, urls, 'entreno', true) : plansListHTML(c, nuts, 'nut') + docsHTML(docs, urls, 'alimentacion', true);
+    body = tab === 'train' ? plansListHTML(c, plans, 'plan') + docsHTML(docs, urls, 'entreno', true) : mealPicksCoachHTML(c, picks) + plansListHTML(c, nuts, 'nut') + docsHTML(docs, urls, 'alimentacion', true);
   }
   if (tab === 'progress'){
     const photos = await soft(api.photos(c.id), 'fotos', []); const urls = await soft(api.fileUrls(photos.map(p => p.path)), 'fotos', {});
@@ -993,6 +999,18 @@ VIEWS.client = async () => {
     <div class="seg" style="margin-bottom:12px">${tabs.map(([k,l]) => `<button class="${tab === k ? 'on' : ''}" data-act="ctab" data-v="${k}">${l}${k === 'chat' ? ` <span class="cnt hidden" data-badge="${esc(c.id)}"></span>` : ''}</button>`).join('')}</div>
     ${body}`, {backBtn: true, sub: c.status === 'pending' ? 'Pendiente de activar' : (tr ? '' : 'Solo nutrición · ') + (c.goal || 'Cliente')});
 };
+/* Lo que el cliente ha marcado que come cada día (últimos 7 días con datos) */
+function mealPicksCoachHTML(c, rows){
+  const n = firstName(c.full_name) || 'El cliente';
+  const days = rows.filter(r => r.picks && Object.keys(r.picks).length);
+  const last7 = days.filter(r => r.day >= isoDaysAgo(6)).length;
+  if (!days.length) return `<div class="sec-title">Lo que ha comido</div><div class="card small muted" style="margin-bottom:14px">${esc(n)} todavía no ha marcado ninguna comida. En su pantalla de Dieta puede tocar la opción que come cada día.</div>`;
+  return `<div class="sec-title">Lo que ha comido<span class="r muted">${last7} de 7 días marcados</span></div>
+    <div class="card stack" style="margin-bottom:14px">${days.slice(0, 7).map(r => `<div>
+      <b class="small">${esc(cap(fmtDate(r.day, {weekday:'long', day:'numeric', month:'short'})))}</b>
+      ${Object.entries(r.picks).sort((a, b) => +a[0] - +b[0]).map(([mi, v]) => `<div class="small"><span class="muted">${esc(v.meal || 'Comida ' + (+mi + 1))}:</span> ${esc(v.opt || 'Opción ' + ((v.o ?? v) + 1))}</div>`).join('')}
+    </div>`).join('')}</div>`;
+}
 function programHTML(c, bill){
   const cur = progAll()[c.id] || '', other = cur && !PROGRAMS.includes(cur);
   return `<div class="card stack" id="progBox">
@@ -1552,9 +1570,12 @@ VIEWS.food = async () => {
   const [{nut}, docs] = await Promise.all([myData(), api.docs(S.me.id).catch(() => [])]);
   const durls = await api.fileUrls(docs.map(d => d.path)).catch(() => ({}));
   const docBlock = docsHTML(docs, durls, 'alimentacion', false);
+  S.cache.nut = nut;
+  if (nut){ const r = (await api.mealPicks(S.me.id, 0).catch(() => [])).find(x => x.day === today());
+    if (r?.picks){ const p = {}; Object.entries(r.picks).forEach(([m, v]) => { p[m] = typeof v === 'object' ? v.o : v; }); try { localStorage.setItem(pickKey(), JSON.stringify(p)); } catch(e){} } }
   return shell('Alimentación', (nut || !docBlock ? nutritionViewHTML(nut, true) : '') + docBlock, {tabs: clientTabs('food'), sub: CFG.BRAND});
 };
-/* Opción elegida en cada comida, por día, guardada en el móvil del cliente */
+/* Opción elegida en cada comida, por día. Se guarda en el móvil y en el servidor para que la vea el coach. */
 const pickKey = () => `jpr-picks-${S.me?.id}-${today()}`;
 const picksGet = () => { try { return JSON.parse(localStorage.getItem(pickKey()) || '{}'); } catch(e){ return {}; } };
 function nutritionViewHTML(nut, canPick = false){
@@ -2414,6 +2435,12 @@ const ACT = {
     if (p[m] === o) delete p[m]; else p[m] = o;
     try { localStorage.setItem(pickKey(), JSON.stringify(p)); } catch(e){}
     el.parentElement.querySelectorAll('.opt.pick').forEach(x => { const on = x === el && p[m] === o; x.classList.toggle('on', on); x.querySelector('.k').innerHTML = on ? icon('check') : (+x.dataset.o + 1); });
+    clearTimeout(S.pickT);
+    S.pickT = setTimeout(() => {
+      const nut = S.cache.nut, out = {};
+      Object.entries(p).forEach(([mi, oi]) => { const meal = nut?.meals?.[mi]; out[mi] = {o: oi, meal: meal?.name || '', opt: meal?.options?.[oi] || ''}; });
+      api.mealPickSave(S.me.id, today(), out, nut?.id).catch(e => { console.warn(e); toast('Marcado en tu móvil, pero no se ha podido enviar a tu coach. Revisa la conexión.'); });
+    }, 600);
   },
   async progSave(){
     const box = $('#progBox'), v = box.querySelector('input[name=prog]:checked')?.value;
@@ -2556,7 +2583,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 26;
+const APP_VERSION = 27;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
