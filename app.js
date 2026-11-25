@@ -22,9 +22,23 @@ const relDate = s => { const d = daysAgo(s); if (d == null) return 'nunca'; if (
 /* Check-in semanal: el coach elige el día (Perfil). La "semana de check-in" empieza ese día. */
 const DOW = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const checkinDow = () => { const v = parseInt((S.settings || {}).checkin_day, 10); return v >= 0 && v <= 6 ? v : 1; };
-/* Frecuencia por cliente (Ficha): {clientId: {every: 2, from: 'AAAA-MM-DD'}}. Sin dato = cada semana. */
+/* Reglas según el plan (el nombre que se pone en Pagos). every: semanas entre check-ins; photos: semanas entre fotos; training: si incluye entreno.
+   Para añadir un plan, añade una línea aquí y la misma en la función steps-reminder de Supabase. */
+const PLAN_RULES = [
+  {re: /basic/, every: 2, photos: 4, training: false},
+];
+const CK_ANCHOR = '2026-11-23'; // lunes de referencia para los check-ins cada 2 semanas que vienen del plan
+const planRule = name => name ? PLAN_RULES.find(r => r.re.test(normEx(name))) || null : null;
+const ruleOf = cid => cid && cid === S.me?.id ? S.myRule || null : (S.rules || {})[cid] || null;
+const trainingOn = () => ruleOf(S.me?.id)?.training !== false;
+/* Frecuencia: lo que el coach elija en la Ficha manda; si no eligió nada, la del plan; si tampoco, cada semana.
+   Ficha guarda {clientId: {every: 1}} o {clientId: {every: 2, from: 'AAAA-MM-DD'}}. */
 const ckFreqAll = () => { try { return JSON.parse((S.settings || {}).checkin_freq || '{}') || {}; } catch(e){ return {}; } };
-const ckFreq = cid => { const f = ckFreqAll()[cid]; return f && +f.every === 2 && f.from ? {every: 2, from: f.from} : {every: 1}; };
+const ckFreq = cid => {
+  const f = ckFreqAll()[cid];
+  if (f) return +f.every === 2 && f.from ? {every: 2, from: f.from, manual: true} : {every: 1, manual: true};
+  return ruleOf(cid)?.every === 2 ? {every: 2, from: CK_ANCHOR} : {every: 1};
+};
 const isoOf = d => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
 function checkinWindow(cid){
   const d = parseDate(today()), f = cid ? ckFreq(cid) : {every: 1};
@@ -510,7 +524,7 @@ function topbar(title, sub, {backBtn = false, right = ''} = {}){
   </header><div class="offline ${navigator.onLine ? 'hidden' : ''}" id="offl">Sin conexión. Lo que registres se enviará al volver la conexión.</div>`;
 }
 function clientTabs(active){
-  const t = [['today','Hoy','home'],['train','Entreno','dumbbell'],['food','Dieta','food'],['progress','Progreso','chart'],['chat','Mensajes','chat'],['profile','Perfil','user']];
+  const t = [['today','Hoy','home'],['train','Entreno','dumbbell'],['food','Dieta','food'],['progress','Progreso','chart'],['chat','Mensajes','chat'],['profile','Perfil','user']].filter(x => x[0] !== 'train' || trainingOn());
   return `<nav class="tabs n6">${t.map(([v,l,i]) => `<button class="${active === v ? 'on' : ''}" data-act="tab" data-v="${v}">${icon(i)}${l}${v === 'chat' ? `<span class="tb-badge hidden" data-badge="${esc(S.me.id)}"></span>` : ''}</button>`).join('')}</nav>`;
 }
 function coachTabs(active){
@@ -735,6 +749,7 @@ VIEWS.pending = async () => authWrap(`<h1>Hola, ${esc(firstName(S.me?.full_name)
    ===================================================================== */
 VIEWS.clients = async () => {
   const [clients, act, bills, hov] = await Promise.all([api.clients(), api.activity(), api.allBilling().catch(() => []), api.healthOverview().catch(() => ({links: [], days: []})), refreshSettings()]);
+  S.rules = Object.fromEntries(bills.map(b => [b.client_id, planRule(b.plan_name)]));
   const cws = {}, cwOf = id => cws[id] || (cws[id] = checkinWindow(id)), ckDone = {}; act.mets.forEach(m => { if (m.date >= cwOf(m.client_id).start && isCheckin(m)) ckDone[m.client_id] = true; });
   const hToday = {}; hov.days.filter(d => d.day === today()).forEach(d => { hToday[d.client_id] = d; });
   const billOf = {}; bills.forEach(b => { billOf[b.client_id] = b; });
@@ -991,7 +1006,8 @@ function clientInfoHTML(c, wmode = 'always'){
     <div class="grid2"><label class="f">Fecha de nacimiento<input class="in" name="birth_date" type="date" value="${esc(c.birth_date)}"></label>
     <label class="f">Altura (cm)<input class="in" name="height_cm" inputmode="decimal" value="${esc(c.height_cm)}"></label></div>
     <label class="f">Objetivo<input class="in" name="goal" value="${esc(c.goal)}"></label>
-    <label class="f">Check-in<select class="in" name="ck_every"><option value="1" ${ckFreq(c.id).every === 1 ? 'selected' : ''}>Cada semana (los ${esc(DOW[checkinDow()])})</option><option value="2" ${ckFreq(c.id).every === 2 ? 'selected' : ''}>Cada 2 semanas (los ${esc(DOW[checkinDow()])})</option></select></label>
+    <label class="f">Check-in<select class="in" name="ck_every">${(() => { const f = ckFreqAll()[c.id], cur = f ? String(+f.every === 2 ? 2 : 1) : 'auto', r = ruleOf(c.id);
+      return [['auto', `Según su plan (${r?.every === 2 ? 'cada 2 semanas' : 'cada semana'}${r?.photos ? `, fotos cada ${r.photos} semanas` : ''})`], ['1', `Cada semana (los ${DOW[checkinDow()]})`], ['2', `Cada 2 semanas (los ${DOW[checkinDow()]})`]].map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`).join(''); })()}</select></label>
     <label class="f">Notas privadas (el cliente no las ve)<textarea class="in" name="notes">${esc(c.notes)}</textarea></label>
     <div class="small muted">Email: ${esc(c.email || '-')}. ${c.consent_at ? `Consentimiento aceptado el ${fmtDate(c.consent_at.slice(0,10), {day:'numeric', month:'long', year:'numeric'})}.` : 'Sin consentimiento registrado.'}</div>
     <button class="btn block" type="submit">Guardar ficha</button></form>
@@ -1003,12 +1019,13 @@ VIEWS.client.mount = () => {
   if (f) f.onsubmit = async e => {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(f)); fd.height_cm = num(fd.height_cm);
-    const every = +fd.ck_every; delete fd.ck_every;
+    const ck = fd.ck_every; delete fd.ck_every;
     try {
       await api.updateProfile(S.p.id, fd, true);
-      if (every !== ckFreq(S.p.id).every){
+      const f0 = ckFreqAll()[S.p.id], cur = f0 ? String(+f0.every === 2 ? 2 : 1) : 'auto';
+      if (ck !== cur){
         await refreshSettings(); const all = ckFreqAll();
-        if (every === 2) all[S.p.id] = {every: 2, from: checkinWindow().start}; else delete all[S.p.id];
+        if (ck === 'auto') delete all[S.p.id]; else if (ck === '2') all[S.p.id] = {every: 2, from: checkinWindow().start}; else all[S.p.id] = {every: 1};
         await api.saveSetting('checkin_freq', JSON.stringify(all)); await refreshSettings();
       }
       toast('Ficha guardada'); render();
@@ -1316,6 +1333,8 @@ VIEWS.train = async () => {
 /* ---------- Hoy (pantalla de inicio del cliente) ---------- */
 VIEWS.today = async () => {
   const [{plan, logs, mets}, bill, h] = await Promise.all([myData(), api.billing(S.me.id).catch(() => null), healthData(S.me.id).catch(() => ({})), refreshSettings()]);
+  if (bill) S.myRule = planRule(bill.plan_name);
+  const tr = trainingOn();
   const ws = mets.filter(m => m.weight_kg != null), cur = ws.at(-1), first = ws[0];
   const diff = cur && first && ws.length > 1 ? num(cur.weight_kg) - num(first.weight_kg) : null;
   const n7 = logs.filter(l => daysAgo(l.date) < 7).length;
@@ -1344,14 +1363,14 @@ VIEWS.today = async () => {
     <div style="margin-bottom:10px"><h1>Hola, ${esc(firstName(S.me.full_name))}</h1>
       ${S.me.goal ? `<p class="small" style="margin:4px 0 0"><span class="muted">Tu objetivo:</span> <b>${esc(S.me.goal)}</b></p>` : ''}</div>
     ${payBanner(bill)}
-    <div class="stats">
+    <div class="stats" ${tr ? '' : 'style="grid-template-columns:1fr 1fr"'}>
       <div class="stat"><small>Peso actual</small><b>${cur ? fmtNum(num(cur.weight_kg)) : '-'}</b>${cur ? '<i>kg</i>' : ''}</div>
       <div class="stat"><small>Desde el inicio</small><b class="${diff ? (diff > 0 ? 'up' : 'down') : ''}" style="font-size:30px">${diff == null ? '-' : diff === 0 ? '±0' : sign(diff)}</b>${diff == null ? '' : '<i>kg</i>'}</div>
-      <div class="stat"><small>Entrenos esta semana</small><b>${n7}</b></div>
+      ${tr ? `<div class="stat"><small>Entrenos esta semana</small><b>${n7}</b></div>` : ''}
     </div>
     <div class="sec-title">${w.every === 2 ? 'Check-in cada 2 semanas' : 'Check-in semanal'}</div>${ckCard}
-    <div class="sec-title">Entreno de hoy</div>${trainCard}
-    ${plan ? `<button class="btn light block" style="margin-top:10px" data-act="tab" data-v="train">Ver todo el plan</button>` : ''}
+    ${tr ? `<div class="sec-title">Entreno de hoy</div>${trainCard}` : ''}
+    ${tr && plan ? `<button class="btn light block" style="margin-top:10px" data-act="tab" data-v="train">Ver todo el plan</button>` : ''}
     ${steps ? `<div class="sec-title">Actividad</div>${steps}` : ''}
   `, {tabs: clientTabs('today'), sub: CFG.BRAND});
 };
@@ -1367,7 +1386,7 @@ VIEWS.checkin = async () => {
   }
   const m = S.draft, prev = m._prev;
   const lastPhoto = (await api.photos(S.me.id).catch(() => []))[0]?.date;
-  const photosDue = !lastPhoto || daysAgo(lastPhoto) >= 14;
+  const pw = ruleOf(S.me.id)?.photos || 2, photosDue = !lastPhoto || daysAgo(lastPhoto) >= pw * 7 - 3;
   const scale = (k, l) => `<div><div class="small muted" style="margin-bottom:6px">${l}</div><div class="scale">${[1,2,3,4,5].map(v => `<button class="${m[k] === v ? 'on' : ''}" data-act="mscale" data-k="${k}" data-v="${v}">${v}</button>`).join('')}</div></div>`;
   const f = (k, l, u, ph = '') => `<label class="f">${l}${u ? ` (${u})` : ''}<input class="in" inputmode="decimal" data-path="${k}" value="${esc(m[k])}" placeholder="${esc(ph)}"></label>`;
   const step = (n, t) => `<div class="ck-step"><span>${n}</span>${t}</div>`;
@@ -1384,14 +1403,14 @@ VIEWS.checkin = async () => {
     </div>
     ${step(2, 'Cómo ha ido la semana')}
     <div class="card stack">
-      <p class="small" style="margin:0">Entrenos en los últimos 7 días: <b>${m._n7}</b></p>
+      ${trainingOn() ? `<p class="small" style="margin:0">Entrenos en los últimos 7 días: <b>${m._n7}</b></p>` : ''}
       ${scale('diet', 'Dieta: 1 casi nada, 5 la he clavado')}
       ${scale('sleep', 'Sueño: 1 fatal, 5 genial')}
       ${scale('stress', 'Estrés: 1 nada, 5 mucho')}
       ${scale('energy', 'Energía: 1 sin fuerzas, 5 a tope')}
     </div>
     ${step(3, `Fotos ${photosDue ? '<em class="badge gold" style="font-style:normal">Te tocan</em>' : '<small class="muted">(opcional esta semana)</small>'}`)}
-    <div class="card"><p class="small muted" style="margin:0 0 10px">${photosDue ? 'Frente, espalda y perfil. Misma luz, misma ropa y a la misma hora que las anteriores.' : `Tus últimas fotos son de ${esc(relDate(lastPhoto))}. Las siguientes, cuando pasen 2 semanas.`}</p>
+    <div class="card"><p class="small muted" style="margin:0 0 10px">${photosDue ? 'Frente, espalda y perfil. Misma luz, misma ropa y a la misma hora que las anteriores.' : `Tus últimas fotos son de ${esc(relDate(lastPhoto))}. Las siguientes, cuando pasen ${pw} semanas.`}</p>
       <div class="grid3">${['frente','espalda','perfil'].map(p => `<label class="upl"><input type="file" accept="image/*" data-pose="${p}" hidden><span class="upl-box ${S.ckPhotos[p] ? 'has' : ''}" data-prev="${p}" ${S.ckPhotos[p] ? `style="background-image:url('${URL.createObjectURL(S.ckPhotos[p])}')"` : ''}>${icon('camera')}<b>${cap(p)}</b><small>Toca aquí</small></span></label>`).join('')}</div></div>
     ${step(4, 'Para tu coach')}
     <label class="f"><textarea class="in" rows="4" data-path="comment" placeholder="Qué tal la semana, dudas, molestias, comidas fuera...">${esc(m.comment)}</textarea></label>
@@ -2328,7 +2347,7 @@ const ACT = {
       const line = (l, v, u, pv) => v == null ? null : `${l}: ${fmtNum(v)} ${u}${pv != null ? ` (${v - num(pv) === 0 ? '±0' : sign(v - num(pv))})` : ''}`;
       const body = ['Check-in',
         line('Peso', m.weight_kg, 'kg', p?.weight_kg), line('Cintura', m.waist_cm, 'cm', p?.waist_cm), line('Cadera', m.hip_cm, 'cm', p?.hip_cm),
-        `Entrenos 7 días: ${d._n7}`, `Dieta ${d.diet}/5 · Sueño ${d.sleep}/5 · Estrés ${d.stress}/5 · Energía ${d.energy}/5`,
+        trainingOn() ? `Entrenos 7 días: ${d._n7}` : null, `Dieta ${d.diet}/5 · Sueño ${d.sleep}/5 · Estrés ${d.stress}/5 · Energía ${d.energy}/5`,
         up ? `Fotos: ${up}` : null, d.comment.trim() ? `\n${d.comment.trim()}` : null].filter(Boolean).join('\n');
       await saveOrQueue('msg', {id: uid(), client_id: d.client_id, sender_id: S.me.id, body}).catch(() => {});
       toast(photoErr ? 'Check-in enviado, pero alguna foto no se ha subido. Súbela luego en Progreso.' : r._pending ? 'Guardado en el móvil. Se enviará al volver la conexión.' : (dw != null && dw < 0 ? '¡Check-in enviado! Vas por buen camino' : '¡Check-in enviado!'), 4000);
@@ -2440,7 +2459,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 20;
+const APP_VERSION = 21;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
@@ -2464,6 +2483,7 @@ async function boot(){
     if (!S.unsub){ try { S.unsub = api.subscribe(onNewMessage); } catch(e){ console.warn(e); } }
     refreshUnread();
     await refreshSettings();
+    if (S.me.role !== 'coach'){ try { S.myRule = planRule((await api.billing(S.me.id))?.plan_name); } catch(e){} }
     home();
     maybeWelcome();
   } catch(e){
