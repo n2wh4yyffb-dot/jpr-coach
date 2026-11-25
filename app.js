@@ -2514,7 +2514,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 24;
+const APP_VERSION = 25;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
