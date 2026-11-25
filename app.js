@@ -31,7 +31,11 @@ const PLAN_RULES = [
 const CK_ANCHOR = '2026-11-23'; // lunes de referencia para los check-ins cada 2 semanas que vienen del plan
 const planRule = name => name ? PLAN_RULES.find(r => r.re.test(normEx(name))) || null : null;
 const ruleOf = cid => cid && cid === S.me?.id ? S.myRule || null : (S.rules || {})[cid] || null;
-const trainingOn = () => ruleOf(S.me?.id)?.training !== false;
+/* Servicio: 'nutri' (solo nutrición) o 'full' (nutrición y entrenamiento). Lo que elija el coach en la Ficha manda; si no, el plan. */
+const svcAll = () => { try { return JSON.parse((S.settings || {}).client_service || '{}') || {}; } catch(e){ return {}; } };
+const svcOf = cid => svcAll()[cid] || (ruleOf(cid)?.training === false ? 'nutri' : 'full');
+const trainingFor = cid => svcOf(cid) !== 'nutri';
+const trainingOn = () => trainingFor(S.me?.id);
 /* Frecuencia: lo que el coach elija en la Ficha manda; si no eligió nada, la del plan; si tampoco, cada semana.
    Ficha guarda {clientId: {every: 1}} o {clientId: {every: 2 o 4, from: 'AAAA-MM-DD'}}. */
 const ckFreqAll = () => { try { return JSON.parse((S.settings || {}).checkin_freq || '{}') || {}; } catch(e){ return {}; } };
@@ -761,14 +765,15 @@ VIEWS.clients = async () => {
   const shown = clients.filter(c => !q || (c.full_name + ' ' + (c.email || '')).toLowerCase().includes(q));
   const pend = shown.filter(c => c.status === 'pending'), rest = shown.filter(c => c.status !== 'pending');
   const active = clients.filter(c => c.status === 'active').length;
-  const trained7 = clients.filter(c => lastLog[c.id] && daysAgo(lastLog[c.id]) <= 7).length;
+  const trCl = clients.filter(c => c.status === 'active' && trainingFor(c.id));
+  const trained7 = trCl.filter(c => lastLog[c.id] && daysAgo(lastLog[c.id]) <= 7).length;
   const row = c => {
-    const d = lastLog[c.id], since = d || (c.created_at || '').slice(0,10), late = c.status === 'active' && !!since && daysAgo(since) > 7;
+    const tr = trainingFor(c.id), d = lastLog[c.id], since = d || (c.created_at || '').slice(0,10), late = tr && c.status === 'active' && !!since && daysAgo(since) > 7;
     const ps = payState(billOf[c.id]);
     return `<div class="card tap item ${c.status === 'pending' ? 'pend' : (late || ps.k === 'late') ? 'late' : ''}" data-act="openClient" data-id="${esc(c.id)}">
       <div class="avatar">${esc(initials(c.full_name))}</div>
       <div class="grow"><b>${esc(c.full_name || c.email)}</b>
-        <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}${c.status === 'active' ? (ckDone[c.id] ? '<span class="ck-tag ok">Check-in ✓</span>' : cwOf(c.id).back >= 1 ? '<span class="ck-tag">Check-in pendiente</span>' : '') : ''}${hToday[c.id]?.steps != null ? `<span class="hmini">${icon('heart')} ${fmtNum(hToday[c.id].steps, 0)} pasos hoy</span>` : ''}</div></div>
+        <div class="small muted">${tr ? `Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}` : 'Solo nutrición'}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}${c.status === 'active' ? (ckDone[c.id] ? '<span class="ck-tag ok">Check-in ✓</span>' : cwOf(c.id).back >= 1 ? '<span class="ck-tag">Check-in pendiente</span>' : '') : ''}${hToday[c.id]?.steps != null ? `<span class="hmini">${icon('heart')} ${fmtNum(hToday[c.id].steps, 0)} pasos hoy</span>` : ''}</div></div>
       <span class="cnt hidden" data-badge="${esc(c.id)}" title="Mensajes sin leer"></span>
       ${c.status === 'pending' ? `<button class="btn sm gold" data-act="activate" data-id="${esc(c.id)}">Activar</button>` : c.status === 'active' && ps.k !== 'none' ? `<span class="badge ${ps.cls}">${esc(ps.short)}</span>` : statusBadge(c.status)}
       <span class="chev">›</span></div>`;
@@ -776,7 +781,7 @@ VIEWS.clients = async () => {
   return shell('Clientes', `
     <div class="stats" style="grid-template-columns:repeat(3,1fr)">
       <div class="stat"><small>Activos</small><b>${active}</b></div>
-      <div class="stat"><small>Entrenaron 7 días</small><b>${trained7}</b><i class="muted">de ${active}</i></div>
+      <div class="stat"><small>Entrenaron 7 días</small><b>${trained7}</b><i class="muted">de ${trCl.length}</i></div>
       <div class="stat"><small>Pagos fallidos</small><b class="${bills.some(b => payState(b).k === 'late') ? 'up' : ''}">${bills.filter(b => payState(b).k === 'late').length}</b></div>
     </div>
     <div style="position:relative;margin-top:12px"><input class="in" id="q" placeholder="Buscar cliente" value="${esc(S.p.q || '')}" style="padding-left:38px"><span style="position:absolute;left:12px;top:12px;width:18px;color:#a39a8c">${icon('search')}</span></div>
@@ -796,9 +801,15 @@ const WELCOME_DEFAULT = {
   title: '¡Hola, {nombre}!',
   body: 'Te doy la bienvenida a JPR Coach. Desde hoy tienes aquí todo lo que vamos a trabajar juntos.\n\nEn Entreno está tu plan. Cuando acabes cada sesión, apunta los kilos y las repeticiones de cada serie. Así vemos semana a semana cómo vas mejorando.\n\nEn Dieta tienes tu plan, con varias opciones en cada comida para que puedas ir cambiando.\n\nEn Hoy tienes el entreno que te toca y, una vez por semana, tu check-in: peso, medidas, cómo ha ido la semana y fotos cuando te toquen.\n\nSi tienes cualquier duda, escríbeme por Mensajes. Te contesto yo personalmente.\n\n¡Vamos a por ello!\nJulián',
 };
-async function welcomeText(){
+const WELCOME_NUTRI_DEFAULT = {
+  title: '¡Hola, {nombre}!',
+  body: 'Te doy la bienvenida a JPR Coach. Desde hoy tienes aquí todo lo que vamos a trabajar juntos.\n\nEn Dieta tienes tu plan, con varias opciones en cada comida para que puedas ir cambiando.\n\nEn Hoy ves cuándo te toca el check-in: peso, medidas, cómo ha ido la semana y fotos cuando te toquen. Me llega todo a mí y con eso ajusto tu plan.\n\nSi tienes cualquier duda, escríbeme por Mensajes. Te contesto yo personalmente.\n\n¡Vamos a por ello!\nJulián',
+};
+async function welcomeText(nutri = false){
   const st = await api.settings().catch(() => ({}));
-  return {title: st.welcome_title ?? WELCOME_DEFAULT.title, body: st.welcome_body ?? WELCOME_DEFAULT.body, mode: st.welcome_mode === 'first' ? 'first' : 'always'};
+  const mode = st.welcome_mode === 'first' ? 'first' : 'always';
+  if (nutri) return {title: st.welcome_n_title ?? WELCOME_NUTRI_DEFAULT.title, body: st.welcome_n_body ?? WELCOME_NUTRI_DEFAULT.body, mode};
+  return {title: st.welcome_title ?? WELCOME_DEFAULT.title, body: st.welcome_body ?? WELCOME_DEFAULT.body, mode};
 }
 const fillName = (t, name) => String(t || '').replace(/\{nombre\}/gi, firstName(name) || '');
 function showWelcome({title, body}, name, onDone){
@@ -816,7 +827,7 @@ async function maybeWelcome(){
   const me = S.me;
   if (document.querySelector('.welcome')) return;
   if (!me || me.role !== 'client' || me.status !== 'active') return;
-  const txt = await welcomeText();
+  const txt = await welcomeText(!trainingOn());
   if (txt.mode === 'first'){
     if (me.welcomed_at) return;
     try { if (localStorage.getItem(WKEY(me.id))) return; } catch(e){}
@@ -827,7 +838,7 @@ async function maybeWelcome(){
   });
 }
 
-VIEWS.coachProfile = async () => { const wt = await welcomeText(); await refreshSettings(); return shell('Perfil', `
+VIEWS.coachProfile = async () => { const wt = await welcomeText(), wn = await welcomeText(true); await refreshSettings(); return shell('Perfil', `
   <div class="card item"><div class="avatar lg">${esc(initials(S.me.full_name))}</div><div><h2>${esc(S.me.full_name)}</h2><div class="muted small">${esc(S.me.email || '')}</div><span class="badge navy">Coach</span></div></div>
   <div class="sec-title">Cómo te pagan</div>
   <form class="card stack" id="fPayCfg">
@@ -869,7 +880,9 @@ VIEWS.coachProfile = async () => { const wt = await welcomeText(); await refresh
       <option value="first" ${wt.mode === 'first' ? 'selected' : ''}>Solo la primera vez que entran</option></select></label>
     <p class="small muted" style="margin:0">Lo ven tus clientes con la cuenta activada. Escribe {nombre} y saldrá el nombre de cada uno.</p>
     <label class="f">Título<input class="in" name="title" maxlength="80" value="${esc(wt.title)}"></label>
-    <label class="f">Texto<textarea class="in" name="body" rows="12" maxlength="3000">${esc(wt.body)}</textarea></label>
+    <label class="f">Texto (nutrición y entrenamiento)<textarea class="in" name="body" rows="12" maxlength="3000">${esc(wt.body)}</textarea></label>
+    <label class="f">Texto para clientes solo de nutrición<textarea class="in" name="nbody" rows="9" maxlength="3000">${esc(wn.body)}</textarea></label>
+    <p class="tiny muted" style="margin:-4px 0 0">A los clientes solo de nutrición les sale este segundo texto, para que no lean nada de entrenamiento.</p>
     <p class="tiny muted" style="margin:-4px 0 0">Deja una línea en blanco para separar párrafos.</p>
     <div class="grid2"><button class="btn light" type="button" data-act="welcomePreview">Ver cómo queda</button><button class="btn" type="submit">${icon('check')} Guardar</button></div>
   </form>
@@ -914,6 +927,7 @@ VIEWS.coachProfile.mount = () => {
     try {
       const title = f.title.value.trim() || WELCOME_DEFAULT.title, body = f.body.value.trim() || WELCOME_DEFAULT.body;
       await api.saveSetting('welcome_title', title); await api.saveSetting('welcome_body', body); await api.saveSetting('welcome_mode', f.mode.value);
+      await api.saveSetting('welcome_n_title', title); await api.saveSetting('welcome_n_body', f.nbody.value.trim() || WELCOME_NUTRI_DEFAULT.body);
       toast('Mensaje de bienvenida guardado');
     } catch(err){ toast(err.message); }
     b.disabled = false;
@@ -928,7 +942,9 @@ async function loadClient(id){
 VIEWS.client = async () => {
   const tab = S.p.tab || 'summary';
   const {c, plans, nuts, logs, mets} = await loadClient(S.p.id);
-  const tabs = [['summary','Resumen'],['health','Salud'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['chat','Mensajes'],['pay','Pagos'],['info','Ficha']];
+  const bl = await api.billing(c.id).catch(() => null); S.rules = S.rules || {}; S.rules[c.id] = planRule(bl?.plan_name); await refreshSettings();
+  const tr = trainingFor(c.id);
+  const tabs = [['summary','Resumen'],['health','Salud'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['chat','Mensajes'],['pay','Pagos'],['info','Ficha']].filter(t => tr || t[0] !== 'train');
   let body = '';
   if (tab === 'summary'){ const h = await healthData(c.id); body = summaryHTML(c, plans, nuts, logs, mets) + healthSummaryHTML(h.link, h.days); }
   if (tab === 'health'){ const h = await healthData(c.id); body = healthCoachHTML(c, h.link, h.days); }
@@ -954,30 +970,31 @@ VIEWS.client = async () => {
   if (tab === 'info') body = clientInfoHTML(c, (await welcomeText()).mode);
   return shell(c.full_name || c.email, `
     <div class="seg" style="margin-bottom:12px">${tabs.map(([k,l]) => `<button class="${tab === k ? 'on' : ''}" data-act="ctab" data-v="${k}">${l}${k === 'chat' ? ` <span class="cnt hidden" data-badge="${esc(c.id)}"></span>` : ''}</button>`).join('')}</div>
-    ${body}`, {backBtn: true, sub: c.status === 'pending' ? 'Pendiente de activar' : c.goal || 'Cliente'});
+    ${body}`, {backBtn: true, sub: c.status === 'pending' ? 'Pendiente de activar' : (tr ? '' : 'Solo nutrición · ') + (c.goal || 'Cliente')});
 };
 function summaryHTML(c, plans, nuts, logs, mets){
   const ws = mets.filter(m => m.weight_kg != null);
   const cur = ws.at(-1), first = ws[0];
   const diff = cur && first && cur !== first ? cur.weight_kg - first.weight_kg : null;
   const n28 = logs.filter(l => daysAgo(l.date) <= 28).length;
-  const activePlan = plans.find(p => p.active), activeNut = nuts.find(n => n.active);
+  const activePlan = plans.find(p => p.active), activeNut = nuts.find(n => n.active), tr = trainingFor(c.id);
   return `
     ${c.status === 'pending' ? `<div class="card cream row between"><div><b>Cuenta pendiente</b><div class="small muted">Actívala para que pueda usar la app.</div></div><button class="btn gold sm" data-act="activate" data-id="${esc(c.id)}">Activar</button></div>` : ''}
     <div class="stats" style="margin-top:${c.status === 'pending' ? 12 : 0}px">
       <div class="stat"><small>Peso actual</small><b>${cur ? fmtNum(cur.weight_kg) : '-'}</b>${cur ? '<i>kg</i>' : ''}${diff != null ? `<i class="${diff > 0 ? 'up' : diff < 0 ? 'down' : ''}">${diff === 0 ? '±0' : sign(diff)} kg</i>` : ''}</div>
-      <div class="stat"><small>Entrenos 4 sem.</small><b>${n28}</b></div>
-      <div class="stat"><small>Último entreno</small><b style="font-size:16px">${relDate(logs[0]?.date)}</b></div>
+      ${tr ? `<div class="stat"><small>Entrenos 4 sem.</small><b>${n28}</b></div>
+      <div class="stat"><small>Último entreno</small><b style="font-size:16px">${relDate(logs[0]?.date)}</b></div>` : `<div class="stat"><small>Último check-in</small><b style="font-size:16px">${relDate([...mets].reverse().find(isCheckin)?.date)}</b></div>
+      <div class="stat"><small>Servicio</small><b style="font-size:16px">Solo nutrición</b></div>`}
     </div>
     <div class="sec-title">Peso</div>
     <div class="card">${lineChart(ws.map(m => ({x: m.date, y: num(m.weight_kg)})))}</div>
     <div class="sec-title">Planes activos</div>
     <div class="list">
-      <div class="card tap item" data-act="ctab" data-v="train"><span class="mini ic-train">${icon('dumbbell')}</span><div class="grow"><b>${activePlan ? esc(activePlan.name) : 'Sin plan de entreno'}</b><div class="small muted">${activePlan ? `${activePlan.days.length} días, actualizado ${relDate((activePlan.updated_at || activePlan.created_at || '').slice(0,10))}` : 'Toca para crear uno'}</div></div><span class="chev">›</span></div>
+      ${tr ? `<div class="card tap item" data-act="ctab" data-v="train"><span class="mini ic-train">${icon('dumbbell')}</span><div class="grow"><b>${activePlan ? esc(activePlan.name) : 'Sin plan de entreno'}</b><div class="small muted">${activePlan ? `${activePlan.days.length} días, actualizado ${relDate((activePlan.updated_at || activePlan.created_at || '').slice(0,10))}` : 'Toca para crear uno'}</div></div><span class="chev">›</span></div>` : ''}
       <div class="card tap item" data-act="ctab" data-v="food"><span class="mini ic-food">${icon('food')}</span><div class="grow"><b>${activeNut ? esc(activeNut.name) : 'Sin plan de alimentación'}</b><div class="small muted">${activeNut ? `${activeNut.kcal || '-'} kcal, ${activeNut.meals.length} comidas` : 'Toca para crear uno'}</div></div><span class="chev">›</span></div>
     </div>
-    <div class="sec-title">Últimos entrenos</div>
-    ${logsListHTML(logs.slice(0, 5))}
+    ${tr ? `<div class="sec-title">Últimos entrenos</div>
+    ${logsListHTML(logs.slice(0, 5))}` : ''}
     ${c.notes ? `<div class="sec-title">Tus notas</div><div class="card cream prose">${esc(c.notes)}</div>` : ''}`;
 }
 function plansListHTML(c, plans, kind){
@@ -1007,6 +1024,9 @@ function clientInfoHTML(c, wmode = 'always'){
     <div class="grid2"><label class="f">Fecha de nacimiento<input class="in" name="birth_date" type="date" value="${esc(c.birth_date)}"></label>
     <label class="f">Altura (cm)<input class="in" name="height_cm" inputmode="decimal" value="${esc(c.height_cm)}"></label></div>
     <label class="f">Objetivo<input class="in" name="goal" value="${esc(c.goal)}"></label>
+    <label class="f">Servicio<select class="in" name="svc">${(() => { const cur = svcAll()[c.id] || 'auto', auto = ruleOf(c.id)?.training === false ? 'solo nutrición' : 'nutrición y entrenamiento';
+      return [['auto', `Según su plan (${auto})`], ['nutri', 'Solo nutrición'], ['full', 'Nutrición y entrenamiento']].map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`).join(''); })()}</select></label>
+    <p class="tiny muted" style="margin:-4px 0 0">Con "Solo nutrición" el cliente no ve nada de entrenamiento: ni la pestaña Entreno, ni entrenos en Hoy, Progreso o el check-in.</p>
     <label class="f">Check-in<select class="in" name="ck_every">${(() => { const f = ckFreqAll()[c.id], cur = f ? String(+f.every > 1 ? +f.every : 1) : 'auto', r = ruleOf(c.id);
       return [['auto', `Según su plan (${r?.every > 1 ? `cada ${r.every} semanas` : 'cada semana'}${r?.photos ? `, fotos cada ${r.photos} semanas` : ''})`], ['1', `Cada semana (los ${DOW[checkinDow()]})`], ['2', `Cada 2 semanas (los ${DOW[checkinDow()]})`], ['4', `Cada 4 semanas (los ${DOW[checkinDow()]})`]].map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`).join(''); })()}</select></label>
     <label class="f">Notas privadas (el cliente no las ve)<textarea class="in" name="notes">${esc(c.notes)}</textarea></label>
@@ -1020,9 +1040,14 @@ VIEWS.client.mount = () => {
   if (f) f.onsubmit = async e => {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(f)); fd.height_cm = num(fd.height_cm);
-    const ck = fd.ck_every; delete fd.ck_every;
+    const ck = fd.ck_every, svc = fd.svc; delete fd.ck_every; delete fd.svc;
     try {
       await api.updateProfile(S.p.id, fd, true);
+      if (svc !== (svcAll()[S.p.id] || 'auto')){
+        await refreshSettings(); const sa = svcAll();
+        if (svc === 'auto') delete sa[S.p.id]; else sa[S.p.id] = svc;
+        await api.saveSetting('client_service', JSON.stringify(sa)); await refreshSettings();
+      }
       const f0 = ckFreqAll()[S.p.id], cur = f0 ? String(+f0.every > 1 ? +f0.every : 1) : 'auto';
       if (ck !== cur){
         await refreshSettings(); const all = ckFreqAll();
@@ -1529,15 +1554,15 @@ function progressHTML(c, logs, mets, asCoach, photos = [], urls = {}){
       <td>${m._pending ? '' : `<button class="mini bad" data-act="delMetric" data-id="${esc(m.id)}" aria-label="Borrar">${icon('trash')}</button>`}</td></tr>`).join('')}</tbody></table></div>
       <p class="tiny muted">S/E/E: sueño, estrés y energía del 1 al 5.</p>` : ''}
     ${mets.length ? `<div class="sec-title">${asCoach ? 'Su cuerpo' : 'Tu cuerpo'}: inicio y ahora</div>${bodyTableHTML(mets, c)}` : ''}
-    ${weeklyHTML(logs, mets)}
+    ${trainingFor(c.id) ? weeklyHTML(logs, mets) : ''}
     ${photosHTML(photos, urls)}
-    <div class="sec-title">Fuerza</div>
+    ${trainingFor(c.id) ? `<div class="sec-title">Fuerza</div>
     <div class="card">
       ${exNames.length ? `<select class="in" id="exSel" style="margin-bottom:8px">${exNames.map(n => `<option ${n === ex ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
         ${lineChart(exPts)}
         ${exPts.length ? `<div class="row between small"><span class="muted">Mejor serie de cada día (kg)</span><b>Récord: ${fmtNum(Math.max(...exPts.map(p => p.y)))} kg</b></div>` : ''}` : '<p class="muted small center">Cuando registres entrenos verás aquí tu evolución en cada ejercicio.</p>'}
     </div>
-    <div class="sec-title">Entrenos</div>${logsListHTML(logs.slice(0, 20), true)}`;
+    <div class="sec-title">Entrenos</div>${logsListHTML(logs.slice(0, 20), true)}` : ''}`;
 }
 function mountProgress(){
   document.querySelectorAll('.tbl.prog').forEach(t => { t.parentElement.scrollLeft = t.parentElement.scrollWidth; });
@@ -2140,7 +2165,7 @@ VIEWS.healthConnect = async () => {
   const url = (S.settings || {}).health_shortcut_url || '';
   const checks = sel => HM.map(m => `<label class="check"><input type="checkbox" name="m" value="${m.k}" ${sel.includes(m.k) ? 'checked' : ''}><span><b>${m.l}</b> <span class="muted small">· ${m.desc}</span></span></label>`).join('');
   if (!link) return shell('Conectar Salud', `
-    <div class="card cream"><b>¿Para qué sirve?</b><p class="small" style="margin:6px 0 0">${coachFirst()} verá cada día tus pasos, cómo has dormido y tus pulsaciones en reposo. Con eso ajusta mejor tu entreno y tu descanso, sin que tengas que apuntar nada.</p></div>
+    <div class="card cream"><b>¿Para qué sirve?</b><p class="small" style="margin:6px 0 0">${coachFirst()} verá cada día tus pasos, cómo has dormido y tus pulsaciones en reposo. Con eso ajusta mejor tu plan y tu descanso, sin que tengas que apuntar nada.</p></div>
     <form class="card stack" id="fHealth" style="margin-top:12px">
       <b>Elige qué compartes</b>
       ${checks(HM.map(m => m.k))}
@@ -2246,7 +2271,7 @@ const ACT = {
   },
   demoHealthSend: async () => { await api.demoHealthSend(S.me.id); toast('Datos enviados'); },
   hMetric: el => { S.p.hm = el.dataset.v; const h = S.cache.health, box = $('#healthBox'); if (h?.link && box) box.innerHTML = healthBoxHTML(h.link, h.days, S.me.role === 'coach'); },
-  healthAsk: () => { S.p.tab = 'chat'; S.p.prefill = `Hola. Si te parece bien, conecta la app Salud de tu iPhone en JPR Coach: Perfil › Salud del iPhone. Así veo tus pasos, tu sueño y tus pulsaciones en reposo, y ajusto mejor el entreno. Eliges tú qué compartes y lo puedes quitar cuando quieras.`; render(); },
+  healthAsk: () => { S.p.tab = 'chat'; S.p.prefill = `Hola. Si te parece bien, conecta la app Salud de tu iPhone en JPR Coach: Perfil › Salud del iPhone. Así veo tus pasos, tu sueño y tus pulsaciones en reposo, y ajusto mejor tu plan. Eliges tú qué compartes y lo puedes quitar cuando quieras.`; render(); },
 
   // Coach
   openClient: el => go('client', {id: el.dataset.id, tab: 'summary'}),
@@ -2371,7 +2396,7 @@ const ACT = {
     } catch(e){ toast(isNetErr(e) ? 'Sin conexión. Inténtalo de nuevo.' : 'No he podido leer este PDF. ' + (e.message || '')); }
     el.disabled = false;
   },
-  welcomePreview: () => { const f = $('#fWelcome'); showWelcome({title: f.title.value || WELCOME_DEFAULT.title, body: f.body.value || WELCOME_DEFAULT.body}, 'Ana García'); },
+  welcomePreview: async () => { const f = $('#fWelcome'); showWelcome({title: f.title.value || WELCOME_DEFAULT.title, body: f.body.value || WELCOME_DEFAULT.body}, 'Ana García', () => setTimeout(() => showWelcome({title: f.title.value || WELCOME_NUTRI_DEFAULT.title, body: f.nbody.value || WELCOME_NUTRI_DEFAULT.body}, 'Ana García (solo nutrición)'), 300)); },
   async welcomeReset(el){
     if (!(await confirmBox('Mostrar la bienvenida', 'Tu cliente volverá a ver el mensaje de bienvenida la próxima vez que entre.', 'Sí, mostrar'))) return;
     try { await api.updateProfile(el.dataset.id, {welcomed_at: null}, true); toast('La verá la próxima vez que entre'); render(); } catch(e){ toast(e.message); }
@@ -2460,7 +2485,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 22;
+const APP_VERSION = 23;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
