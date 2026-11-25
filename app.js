@@ -26,27 +26,28 @@ const checkinDow = () => { const v = parseInt((S.settings || {}).checkin_day, 10
    Para añadir un plan, añade una línea aquí y la misma en la función steps-reminder de Supabase. */
 const PLAN_RULES = [
   {re: /basic/, every: 2, photos: 4, training: false},
+  {re: /premium/, every: 4, photos: 4},
 ];
 const CK_ANCHOR = '2026-11-23'; // lunes de referencia para los check-ins cada 2 semanas que vienen del plan
 const planRule = name => name ? PLAN_RULES.find(r => r.re.test(normEx(name))) || null : null;
 const ruleOf = cid => cid && cid === S.me?.id ? S.myRule || null : (S.rules || {})[cid] || null;
 const trainingOn = () => ruleOf(S.me?.id)?.training !== false;
 /* Frecuencia: lo que el coach elija en la Ficha manda; si no eligió nada, la del plan; si tampoco, cada semana.
-   Ficha guarda {clientId: {every: 1}} o {clientId: {every: 2, from: 'AAAA-MM-DD'}}. */
+   Ficha guarda {clientId: {every: 1}} o {clientId: {every: 2 o 4, from: 'AAAA-MM-DD'}}. */
 const ckFreqAll = () => { try { return JSON.parse((S.settings || {}).checkin_freq || '{}') || {}; } catch(e){ return {}; } };
 const ckFreq = cid => {
   const f = ckFreqAll()[cid];
-  if (f) return +f.every === 2 && f.from ? {every: 2, from: f.from, manual: true} : {every: 1, manual: true};
-  return ruleOf(cid)?.every === 2 ? {every: 2, from: CK_ANCHOR} : {every: 1};
+  if (f) return +f.every > 1 && f.from ? {every: +f.every, from: f.from, manual: true} : {every: 1, manual: true};
+  const r = ruleOf(cid); return r?.every > 1 ? {every: r.every, from: CK_ANCHOR} : {every: 1};
 };
 const isoOf = d => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
 function checkinWindow(cid){
   const d = parseDate(today()), f = cid ? ckFreq(cid) : {every: 1};
   let back = (d.getDay() - checkinDow() + 7) % 7;
-  if (f.every === 2){
+  if (f.every > 1){
     const last = new Date(d); last.setDate(d.getDate() - back);
     const wk = Math.round((last - parseDate(f.from)) / 864e5 / 7);
-    if (((wk % 2) + 2) % 2 === 1) back += 7;
+    back += 7 * (((wk % f.every) + f.every) % f.every);
   }
   const st = new Date(d); st.setDate(d.getDate() - back);
   const nx = new Date(st); nx.setDate(st.getDate() + 7 * f.every);
@@ -1006,8 +1007,8 @@ function clientInfoHTML(c, wmode = 'always'){
     <div class="grid2"><label class="f">Fecha de nacimiento<input class="in" name="birth_date" type="date" value="${esc(c.birth_date)}"></label>
     <label class="f">Altura (cm)<input class="in" name="height_cm" inputmode="decimal" value="${esc(c.height_cm)}"></label></div>
     <label class="f">Objetivo<input class="in" name="goal" value="${esc(c.goal)}"></label>
-    <label class="f">Check-in<select class="in" name="ck_every">${(() => { const f = ckFreqAll()[c.id], cur = f ? String(+f.every === 2 ? 2 : 1) : 'auto', r = ruleOf(c.id);
-      return [['auto', `Según su plan (${r?.every === 2 ? 'cada 2 semanas' : 'cada semana'}${r?.photos ? `, fotos cada ${r.photos} semanas` : ''})`], ['1', `Cada semana (los ${DOW[checkinDow()]})`], ['2', `Cada 2 semanas (los ${DOW[checkinDow()]})`]].map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`).join(''); })()}</select></label>
+    <label class="f">Check-in<select class="in" name="ck_every">${(() => { const f = ckFreqAll()[c.id], cur = f ? String(+f.every > 1 ? +f.every : 1) : 'auto', r = ruleOf(c.id);
+      return [['auto', `Según su plan (${r?.every > 1 ? `cada ${r.every} semanas` : 'cada semana'}${r?.photos ? `, fotos cada ${r.photos} semanas` : ''})`], ['1', `Cada semana (los ${DOW[checkinDow()]})`], ['2', `Cada 2 semanas (los ${DOW[checkinDow()]})`], ['4', `Cada 4 semanas (los ${DOW[checkinDow()]})`]].map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`).join(''); })()}</select></label>
     <label class="f">Notas privadas (el cliente no las ve)<textarea class="in" name="notes">${esc(c.notes)}</textarea></label>
     <div class="small muted">Email: ${esc(c.email || '-')}. ${c.consent_at ? `Consentimiento aceptado el ${fmtDate(c.consent_at.slice(0,10), {day:'numeric', month:'long', year:'numeric'})}.` : 'Sin consentimiento registrado.'}</div>
     <button class="btn block" type="submit">Guardar ficha</button></form>
@@ -1022,10 +1023,10 @@ VIEWS.client.mount = () => {
     const ck = fd.ck_every; delete fd.ck_every;
     try {
       await api.updateProfile(S.p.id, fd, true);
-      const f0 = ckFreqAll()[S.p.id], cur = f0 ? String(+f0.every === 2 ? 2 : 1) : 'auto';
+      const f0 = ckFreqAll()[S.p.id], cur = f0 ? String(+f0.every > 1 ? +f0.every : 1) : 'auto';
       if (ck !== cur){
         await refreshSettings(); const all = ckFreqAll();
-        if (ck === 'auto') delete all[S.p.id]; else if (ck === '2') all[S.p.id] = {every: 2, from: checkinWindow().start}; else all[S.p.id] = {every: 1};
+        if (ck === 'auto') delete all[S.p.id]; else if (ck === '2' || ck === '4') all[S.p.id] = {every: +ck, from: checkinWindow().start}; else all[S.p.id] = {every: 1};
         await api.saveSetting('checkin_freq', JSON.stringify(all)); await refreshSettings();
       }
       toast('Ficha guardada'); render();
@@ -1368,7 +1369,7 @@ VIEWS.today = async () => {
       <div class="stat"><small>Desde el inicio</small><b class="${diff ? (diff > 0 ? 'up' : 'down') : ''}" style="font-size:30px">${diff == null ? '-' : diff === 0 ? '±0' : sign(diff)}</b>${diff == null ? '' : '<i>kg</i>'}</div>
       ${tr ? `<div class="stat"><small>Entrenos esta semana</small><b>${n7}</b></div>` : ''}
     </div>
-    <div class="sec-title">${w.every === 2 ? 'Check-in cada 2 semanas' : 'Check-in semanal'}</div>${ckCard}
+    <div class="sec-title">${w.every > 1 ? `Check-in cada ${w.every} semanas` : 'Check-in semanal'}</div>${ckCard}
     ${tr ? `<div class="sec-title">Entreno de hoy</div>${trainCard}` : ''}
     ${tr && plan ? `<button class="btn light block" style="margin-top:10px" data-act="tab" data-v="train">Ver todo el plan</button>` : ''}
     ${steps ? `<div class="sec-title">Actividad</div>${steps}` : ''}
@@ -2459,7 +2460,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 21;
+const APP_VERSION = 22;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
