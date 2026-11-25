@@ -778,6 +778,7 @@ VIEWS.coachProfile = async () => { const wt = await welcomeText(); await refresh
     <button class="btn light block" data-act="privacy">Ver política de privacidad (borrador)</button>
     ${DEMO ? '<button class="btn light block" data-act="resetDemo">Reiniciar datos de la demo</button>' : ''}
     <button class="btn danger block" data-act="logout">${icon('logout')} Cerrar sesión</button>
+    <p class="tiny muted center" style="margin-top:10px">Versión ${APP_VERSION}</p>
   </div>`, {sub: CFG.BRAND, tabs: coachTabs('coachProfile')}); };
 VIEWS.coachProfile.mount = () => {
   const fp = $('#fPayCfg');
@@ -1595,6 +1596,7 @@ VIEWS.profile = async () => {
       <button class="btn light block" data-act="privacy">Política de privacidad</button>
       ${DEMO ? '<button class="btn light block" data-act="resetDemo">Reiniciar datos de la demo</button>' : ''}
       <button class="btn danger block" data-act="logout">${icon('logout')} Cerrar sesión</button>
+    <p class="tiny muted center" style="margin-top:10px">Versión ${APP_VERSION}</p>
     </div>`, {tabs: clientTabs('profile'), sub: CFG.BRAND});
 };
 VIEWS.profile.mount = () => {
@@ -2342,6 +2344,18 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
 /* =====================================================================
    Arranque
    ===================================================================== */
+/* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
+const APP_VERSION = 18;
+if ('serviceWorker' in navigator){
+  const had = !!navigator.serviceWorker.controller; let pend = false;
+  const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) reloadSafe(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {});
+    if (pend && !S.draft) location.reload();
+  });
+}
 async function boot(){
   try {
     const sess = await api.session();
