@@ -536,7 +536,22 @@ const e1rm = s => s && s.kg ? s.kg * (1 + (s.reps || 1) / 30) : null;
 const volume = log => (log.entries || []).reduce((a, e) => a + (e.sets || []).reduce((b, s) => b + (num(s.kg) || 0) * (num(s.reps) || 0), 0), 0);
 // Repeticiones objetivo de la serie i: "15/12/10/8" da 15, 12, 10, 8
 const repsFor = (t, i) => { const rs = String(t?.reps || '').split('/'); return parseInt(rs[Math.min(i, rs.length - 1)]) || ''; };
-const videoLinks = v => String(v || '').split(/\s+/).filter(u => /^https?:\/\//i.test(u)).map((u, i, a) => `<a class="vid" href="${esc(u)}" target="_blank" rel="noopener">${icon('play', true)} ${a.length > 1 ? `Vídeo ${i + 1}` : 'Ver vídeo'}</a>`).join('');
+/* Vídeos de ejercicios: YouTube y archivos de vídeo se ven dentro de la app; el resto se abre fuera */
+const ytId = u => { const m = String(u).match(/(?:youtube\.com\/(?:shorts\/|embed\/|live\/|watch\?(?:.*&)?v=)|youtu\.be\/)([\w-]{11})/i); return m ? m[1] : null; };
+const isVidFile = u => /\.(mp4|mov|m4v|webm)(\?|#|$)/i.test(u);
+const videoLinks = v => String(v || '').split(/\s+/).filter(u => /^https?:\/\//i.test(u)).map((u, i, a) => {
+  const label = `${icon('play', true)} ${a.length > 1 ? `Vídeo ${i + 1}` : 'Ver vídeo'}`;
+  return ytId(u) || isVidFile(u) ? `<button type="button" class="vid" data-act="playVid" data-url="${esc(u)}">${label}</button>` : `<a class="vid" href="${esc(u)}" target="_blank" rel="noopener">${label}</a>`;
+}).join('');
+function playVideo(u, title = ''){
+  const id = ytId(u), vertical = /\/shorts\//i.test(u);
+  const player = id
+    ? `<iframe src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&playsinline=1&rel=0&modestbranding=1&loop=1&playlist=${id}" title="${esc(title || 'Vídeo del ejercicio')}" referrerpolicy="strict-origin-when-cross-origin" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`
+    : `<video src="${esc(u)}" controls autoplay loop playsinline muted></video>`;
+  modal(`${title ? `<h2 style="margin-bottom:10px">${esc(title)}</h2>` : ''}<div class="vplayer ${vertical ? 'v' : ''}">${player}</div>
+    <div class="row between" style="margin-top:12px;gap:10px">${id ? `<a class="small muted" href="${esc(u)}" target="_blank" rel="noopener">¿No carga? Ábrelo en YouTube</a>` : '<span></span>'}<button class="btn" data-x="ok">Cerrar</button></div>`,
+    (m, close) => { m.classList.add('vmodal'); m.querySelector('[data-x=ok]').onclick = close; });
+}
 function lastFor(logs, exercise){
   for (const l of logs){ const e = (l.entries || []).find(x => x.exercise === exercise); if (e && e.sets?.some(s => s.kg || s.reps)) return {date: l.date, sets: e.sets}; }
   return null;
@@ -2174,6 +2189,7 @@ const ACT = {
   },
   metricNew: () => go('metricNew'),
   checkinNew: () => go('checkin'),
+  playVid: el => playVideo(el.dataset.url, el.closest('.exs')?.querySelector('.exs-head b')?.textContent || ''),
   async checkinSave(el){
     const d = S.draft, K = ['weight_kg','waist_cm','hip_cm','body_fat','visceral_fat','muscle_kg','chest_cm','arm_cm','thigh_cm'];
     const m = {id: d.id, client_id: d.client_id, date: d.date, sleep: d.sleep, stress: d.stress, energy: d.energy};
