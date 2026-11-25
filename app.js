@@ -30,6 +30,12 @@ const PLAN_RULES = [
 ];
 const CK_ANCHOR = '2026-11-23'; // lunes de referencia para los check-ins cada 2 semanas que vienen del plan
 const planRule = name => name ? PLAN_RULES.find(r => r.re.test(normEx(name))) || null : null;
+/* Programa de cada cliente (pestaña Programa de su ficha). Si no tiene, se usa el nombre de su plan de pago. */
+const PROGRAMS = ['Program Basic Nutrición', 'Program Premium', 'Program Platinum', 'Program Partner', 'Program Pro'];
+const progAll = () => { try { return JSON.parse((S.settings || {}).client_program || '{}') || {}; } catch(e){ return {}; } };
+const progOf = (cid, planName) => progAll()[cid] || planName || '';
+const ruleText = name => { const r = planRule(name), every = r?.every || 1, ph = r?.photos || 2;
+  return `${r?.training === false ? 'Solo nutrición' : 'Nutrición y entrenamiento'} · check-in ${every > 1 ? `cada ${every} semanas` : 'cada semana'} · fotos cada ${ph} semanas`; };
 const ruleOf = cid => cid && cid === S.me?.id ? S.myRule || null : (S.rules || {})[cid] || null;
 /* Servicio: 'nutri' (solo nutrición) o 'full' (nutrición y entrenamiento). Lo que elija el coach en la Ficha manda; si no, el plan. */
 const svcAll = () => { try { return JSON.parse((S.settings || {}).client_service || '{}') || {}; } catch(e){ return {}; } };
@@ -754,7 +760,8 @@ VIEWS.pending = async () => authWrap(`<h1>Hola, ${esc(firstName(S.me?.full_name)
    ===================================================================== */
 VIEWS.clients = async () => {
   const [clients, act, bills, hov] = await Promise.all([api.clients(), api.activity(), api.allBilling().catch(() => []), api.healthOverview().catch(() => ({links: [], days: []})), refreshSettings()]);
-  S.rules = Object.fromEntries(bills.map(b => [b.client_id, planRule(b.plan_name)]));
+  const bp = Object.fromEntries(bills.map(b => [b.client_id, b.plan_name])), progName = id => progOf(id, bp[id]);
+  S.rules = Object.fromEntries(clients.map(c => [c.id, planRule(progName(c.id))]));
   const cws = {}, cwOf = id => cws[id] || (cws[id] = checkinWindow(id)), ckDone = {}; act.mets.forEach(m => { if (m.date >= cwOf(m.client_id).start && isCheckin(m)) ckDone[m.client_id] = true; });
   const hToday = {}; hov.days.filter(d => d.day === today()).forEach(d => { hToday[d.client_id] = d; });
   const billOf = {}; bills.forEach(b => { billOf[b.client_id] = b; });
@@ -772,7 +779,7 @@ VIEWS.clients = async () => {
     const ps = payState(billOf[c.id]);
     return `<div class="card tap item ${c.status === 'pending' ? 'pend' : (late || ps.k === 'late') ? 'late' : ''}" data-act="openClient" data-id="${esc(c.id)}">
       <div class="avatar">${esc(initials(c.full_name))}</div>
-      <div class="grow"><b>${esc(c.full_name || c.email)}</b>
+      <div class="grow"><b>${esc(c.full_name || c.email)}</b>${progName(c.id) ? `<span class="ptag">${esc(progName(c.id).replace(/^program\s+/i, ''))}</span>` : ''}
         <div class="small muted">${tr ? `Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}` : 'Solo nutrición'}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}${c.status === 'active' ? (ckDone[c.id] ? '<span class="ck-tag ok">Check-in ✓</span>' : cwOf(c.id).back >= 1 ? '<span class="ck-tag">Check-in pendiente</span>' : '') : ''}${hToday[c.id]?.steps != null ? `<span class="hmini">${icon('heart')} ${fmtNum(hToday[c.id].steps, 0)} pasos hoy</span>` : ''}</div></div>
       <span class="cnt hidden" data-badge="${esc(c.id)}" title="Mensajes sin leer"></span>
       ${c.status === 'pending' ? `<button class="btn sm gold" data-act="activate" data-id="${esc(c.id)}">Activar</button>` : c.status === 'active' && ps.k !== 'none' ? `<span class="badge ${ps.cls}">${esc(ps.short)}</span>` : statusBadge(c.status)}
@@ -942,9 +949,9 @@ async function loadClient(id){
 VIEWS.client = async () => {
   const tab = S.p.tab || 'summary';
   const {c, plans, nuts, logs, mets} = await loadClient(S.p.id);
-  const bl = await api.billing(c.id).catch(() => null); S.rules = S.rules || {}; S.rules[c.id] = planRule(bl?.plan_name); await refreshSettings();
+  await refreshSettings(); const bl = await api.billing(c.id).catch(() => null); S.rules = S.rules || {}; S.rules[c.id] = planRule(progOf(c.id, bl?.plan_name));
   const tr = trainingFor(c.id);
-  const tabs = [['summary','Resumen'],['health','Salud'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['chat','Mensajes'],['pay','Pagos'],['info','Ficha']].filter(t => tr || t[0] !== 'train');
+  const tabs = [['summary','Resumen'],['program','Programa'],['health','Salud'],['train','Entreno'],['food','Alimentación'],['progress','Progreso'],['chat','Mensajes'],['pay','Pagos'],['info','Ficha']].filter(t => tr || t[0] !== 'train');
   let body = '';
   if (tab === 'summary'){ const h = await healthData(c.id); body = summaryHTML(c, plans, nuts, logs, mets) + healthSummaryHTML(h.link, h.days); }
   if (tab === 'health'){ const h = await healthData(c.id); body = healthCoachHTML(c, h.link, h.days); }
@@ -968,10 +975,22 @@ VIEWS.client = async () => {
     S.cache.billing = b; body = coachPayHTML(c, b, pays);
   }
   if (tab === 'info') body = clientInfoHTML(c, (await welcomeText()).mode);
+  if (tab === 'program') body = programHTML(c, bl);
   return shell(c.full_name || c.email, `
     <div class="seg" style="margin-bottom:12px">${tabs.map(([k,l]) => `<button class="${tab === k ? 'on' : ''}" data-act="ctab" data-v="${k}">${l}${k === 'chat' ? ` <span class="cnt hidden" data-badge="${esc(c.id)}"></span>` : ''}</button>`).join('')}</div>
     ${body}`, {backBtn: true, sub: c.status === 'pending' ? 'Pendiente de activar' : (tr ? '' : 'Solo nutrición · ') + (c.goal || 'Cliente')});
 };
+function programHTML(c, bill){
+  const cur = progAll()[c.id] || '', other = cur && !PROGRAMS.includes(cur);
+  return `<div class="card stack" id="progBox">
+    <p class="small muted" style="margin:0">Elige el programa de ${esc(firstName(c.full_name) || 'este cliente')}. De él dependen el check-in, las fotos y si ve o no la parte de entrenamiento.</p>
+    ${PROGRAMS.map(p => `<label class="prog"><input type="radio" name="prog" value="${esc(p)}" ${cur === p ? 'checked' : ''}><div><b>${esc(p)}</b><div class="tiny muted">${esc(ruleText(p))}</div></div></label>`).join('')}
+    <label class="prog"><input type="radio" name="prog" value="__other" ${other ? 'checked' : ''}><div class="grow"><b>Otro</b><input class="in" name="other" placeholder="Nombre del programa" value="${esc(other ? cur : '')}" style="margin-top:6px"></div></label>
+    ${!cur && bill?.plan_name ? `<p class="tiny muted" style="margin:0">Sin programa elegido, ahora se usa el nombre de su plan de pago: <b>${esc(bill.plan_name)}</b> (${esc(ruleText(bill.plan_name))}).</p>` : ''}
+    <div class="grid2"><button class="btn light" data-act="progClear" ${cur ? '' : 'disabled'}>Quitar</button><button class="btn" data-act="progSave">${icon('check')} Guardar programa</button></div>
+  </div>
+  <p class="tiny muted" style="margin:8px 2px 0">Si con este cliente quieres otra frecuencia de check-in o cambiar lo de solo nutrición, hazlo en su Ficha: lo que pongas allí manda sobre el programa.</p>`;
+}
 function summaryHTML(c, plans, nuts, logs, mets){
   const ws = mets.filter(m => m.weight_kg != null);
   const cur = ws.at(-1), first = ws[0];
@@ -1359,7 +1378,7 @@ VIEWS.train = async () => {
 /* ---------- Hoy (pantalla de inicio del cliente) ---------- */
 VIEWS.today = async () => {
   const [{plan, logs, mets}, bill, h] = await Promise.all([myData(), api.billing(S.me.id).catch(() => null), healthData(S.me.id).catch(() => ({})), refreshSettings()]);
-  if (bill) S.myRule = planRule(bill.plan_name);
+  S.myRule = planRule(progOf(S.me.id, bill?.plan_name));
   const tr = trainingOn();
   const ws = mets.filter(m => m.weight_kg != null), cur = ws.at(-1), first = ws[0];
   const diff = cur && first && ws.length > 1 ? num(cur.weight_kg) - num(first.weight_kg) : null;
@@ -1716,6 +1735,7 @@ VIEWS.profile = async () => {
   const [bill, pays, hlink, pst] = await Promise.all([api.billing(c.id).catch(() => null), api.payments(c.id).catch(() => []), api.healthLink(c.id).catch(() => null), pushState()]);
   return shell('Perfil', `
     <div class="card item"><div class="avatar lg">${esc(initials(c.full_name))}</div><div><h2>${esc(c.full_name)}</h2><div class="muted small">${esc(c.email || '')}</div></div></div>
+    ${progOf(c.id, bill?.plan_name) ? `<div class="card cream" style="margin-top:10px"><div class="small muted">Tu programa</div><b>${esc(progOf(c.id, bill?.plan_name))}</b></div>` : ''}
     ${c.goal ? `<div class="card cream" style="margin-top:10px"><div class="small muted">Tu objetivo</div><b>${esc(c.goal)}</b></div>` : ''}
     ${clientPayHTML(bill, pays)}
     ${healthCardHTML(hlink)}
@@ -2353,6 +2373,15 @@ const ACT = {
   },
   metricNew: () => go('metricNew'),
   checkinNew: () => go('checkin'),
+  async progSave(){
+    const box = $('#progBox'), v = box.querySelector('input[name=prog]:checked')?.value;
+    const name = v === '__other' ? box.querySelector('[name=other]').value.trim() : v;
+    if (!name) return toast('Elige un programa');
+    try { await refreshSettings(); const all = progAll(); all[S.p.id] = name; await api.saveSetting('client_program', JSON.stringify(all)); await refreshSettings(); toast('Programa guardado'); render(); } catch(e){ toast(e.message); }
+  },
+  async progClear(){
+    try { await refreshSettings(); const all = progAll(); delete all[S.p.id]; await api.saveSetting('client_program', JSON.stringify(all)); await refreshSettings(); toast('Programa quitado'); render(); } catch(e){ toast(e.message); }
+  },
   playVid: el => playVideo(el.dataset.url, el.dataset.title || el.closest('.exs')?.querySelector('.exs-head b')?.textContent || ''),
   async checkinSave(el){
     const d = S.draft, K = ['weight_kg','waist_cm','hip_cm','body_fat','visceral_fat','muscle_kg','chest_cm','arm_cm','thigh_cm'];
@@ -2485,7 +2514,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 23;
+const APP_VERSION = 24;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
@@ -2509,7 +2538,7 @@ async function boot(){
     if (!S.unsub){ try { S.unsub = api.subscribe(onNewMessage); } catch(e){ console.warn(e); } }
     refreshUnread();
     await refreshSettings();
-    if (S.me.role !== 'coach'){ try { S.myRule = planRule((await api.billing(S.me.id))?.plan_name); } catch(e){} }
+    if (S.me.role !== 'coach'){ try { S.myRule = planRule(progOf(S.me.id, (await api.billing(S.me.id).catch(() => null))?.plan_name)); } catch(e){} }
     home();
     maybeWelcome();
   } catch(e){
