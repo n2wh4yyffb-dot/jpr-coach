@@ -22,14 +22,24 @@ const relDate = s => { const d = daysAgo(s); if (d == null) return 'nunca'; if (
 /* Check-in semanal: el coach elige el día (Perfil). La "semana de check-in" empieza ese día. */
 const DOW = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const checkinDow = () => { const v = parseInt((S.settings || {}).checkin_day, 10); return v >= 0 && v <= 6 ? v : 1; };
-function checkinWindow(){
-  const d = parseDate(today()), back = (d.getDay() - checkinDow() + 7) % 7;
+/* Frecuencia por cliente (Ficha): {clientId: {every: 2, from: 'AAAA-MM-DD'}}. Sin dato = cada semana. */
+const ckFreqAll = () => { try { return JSON.parse((S.settings || {}).checkin_freq || '{}') || {}; } catch(e){ return {}; } };
+const ckFreq = cid => { const f = ckFreqAll()[cid]; return f && +f.every === 2 && f.from ? {every: 2, from: f.from} : {every: 1}; };
+const isoOf = d => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+function checkinWindow(cid){
+  const d = parseDate(today()), f = cid ? ckFreq(cid) : {every: 1};
+  let back = (d.getDay() - checkinDow() + 7) % 7;
+  if (f.every === 2){
+    const last = new Date(d); last.setDate(d.getDate() - back);
+    const wk = Math.round((last - parseDate(f.from)) / 864e5 / 7);
+    if (((wk % 2) + 2) % 2 === 1) back += 7;
+  }
   const st = new Date(d); st.setDate(d.getDate() - back);
-  const iso = new Date(st.getTime() - st.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
-  return {start: iso, back, dueToday: back === 0, day: DOW[checkinDow()]};
+  const nx = new Date(st); nx.setDate(st.getDate() + 7 * f.every);
+  return {start: isoOf(st), back, dueToday: back === 0, day: DOW[checkinDow()], every: f.every, next: isoOf(nx)};
 }
 const isCheckin = m => m && (m.weight_kg != null || m.waist_cm != null) && (m.sleep != null || m.energy != null);
-const checkinOf = (mets, w = checkinWindow()) => [...mets].reverse().find(m => m.date >= w.start && isCheckin(m)) || null;
+const checkinOf = (mets, w = checkinWindow(S.me?.id)) => [...mets].reverse().find(m => m.date >= w.start && isCheckin(m)) || null;
 const initials = n => (n || '?').trim().split(/\s+/).slice(0,2).map(w => w[0]).join('').toUpperCase() || '?';
 const firstName = n => (n || '').trim().split(/\s+/)[0] || '';
 const getPath = (o, p) => p.split('.').reduce((a,k) => a?.[k], o);
@@ -642,7 +652,7 @@ VIEWS.pending = async () => authWrap(`<h1>Hola, ${esc(firstName(S.me?.full_name)
    ===================================================================== */
 VIEWS.clients = async () => {
   const [clients, act, bills, hov] = await Promise.all([api.clients(), api.activity(), api.allBilling().catch(() => []), api.healthOverview().catch(() => ({links: [], days: []})), refreshSettings()]);
-  const cw = checkinWindow(), ckDone = {}; act.mets.forEach(m => { if (m.date >= cw.start && isCheckin(m)) ckDone[m.client_id] = true; });
+  const cws = {}, cwOf = id => cws[id] || (cws[id] = checkinWindow(id)), ckDone = {}; act.mets.forEach(m => { if (m.date >= cwOf(m.client_id).start && isCheckin(m)) ckDone[m.client_id] = true; });
   const hToday = {}; hov.days.filter(d => d.day === today()).forEach(d => { hToday[d.client_id] = d; });
   const billOf = {}; bills.forEach(b => { billOf[b.client_id] = b; });
   const lastLog = {}, lastW = {};
@@ -659,7 +669,7 @@ VIEWS.clients = async () => {
     return `<div class="card tap item ${c.status === 'pending' ? 'pend' : (late || ps.k === 'late') ? 'late' : ''}" data-act="openClient" data-id="${esc(c.id)}">
       <div class="avatar">${esc(initials(c.full_name))}</div>
       <div class="grow"><b>${esc(c.full_name || c.email)}</b>
-        <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}${c.status === 'active' ? (ckDone[c.id] ? '<span class="ck-tag ok">Check-in ✓</span>' : cw.back >= 1 ? '<span class="ck-tag">Check-in pendiente</span>' : '') : ''}${hToday[c.id]?.steps != null ? `<span class="hmini">${icon('heart')} ${fmtNum(hToday[c.id].steps, 0)} pasos hoy</span>` : ''}</div></div>
+        <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}${c.status === 'active' ? (ckDone[c.id] ? '<span class="ck-tag ok">Check-in ✓</span>' : cwOf(c.id).back >= 1 ? '<span class="ck-tag">Check-in pendiente</span>' : '') : ''}${hToday[c.id]?.steps != null ? `<span class="hmini">${icon('heart')} ${fmtNum(hToday[c.id].steps, 0)} pasos hoy</span>` : ''}</div></div>
       <span class="cnt hidden" data-badge="${esc(c.id)}" title="Mensajes sin leer"></span>
       ${c.status === 'pending' ? `<button class="btn sm gold" data-act="activate" data-id="${esc(c.id)}">Activar</button>` : c.status === 'active' && ps.k !== 'none' ? `<span class="badge ${ps.cls}">${esc(ps.short)}</span>` : statusBadge(c.status)}
       <span class="chev">›</span></div>`;
@@ -734,7 +744,9 @@ VIEWS.coachProfile = async () => { const wt = await welcomeText(); await refresh
   <div class="sec-title">Check-in semanal</div>
   <form class="card stack" id="fCheckin">
     <label class="f">Día del check-in<select class="in" name="day">${[1,2,3,4,5,6,0].map(d => `<option value="${d}" ${checkinDow() === d ? 'selected' : ''}>${cap(DOW[d])}</option>`).join('')}</select></label>
-    <p class="tiny muted" style="margin:-4px 0 0">Ese día tus clientes ven en Hoy que les toca el check-in. Cuando lo envían, te llega un resumen a Mensajes y en tu lista ves quién lo tiene pendiente.</p>
+    <div class="grid2"><label class="f">Aviso al móvil<select class="in" name="on"><option value="on" ${(S.settings || {}).checkin_reminder !== 'off' ? 'selected' : ''}>Activado</option><option value="off" ${(S.settings || {}).checkin_reminder === 'off' ? 'selected' : ''}>Desactivado</option></select></label>
+      <label class="f">Hora del aviso<select class="in" name="hour">${[8,9,10,11,12,13,17,18,19,20,21].map(h => `<option value="${h}" ${String((S.settings || {}).checkin_hour || '10') === String(h) ? 'selected' : ''}>${h}:00</option>`).join('')}</select></label></div>
+    <p class="tiny muted" style="margin:-4px 0 0">Ese día tus clientes ven en Hoy que les toca el check-in y les llega un aviso al móvil a esa hora (si han activado los avisos en su Perfil). Si 2 días después sigue pendiente, les llega un recordatorio. Quién lo hace cada 2 semanas se elige en la Ficha de cada cliente. Cuando lo envían, te llega un resumen a Mensajes.</p>
     <button class="btn" type="submit">${icon('check')} Guardar</button>
   </form>
   <div class="sec-title">Salud del iPhone</div>
@@ -783,7 +795,7 @@ VIEWS.coachProfile.mount = () => {
     b.disabled = false;
   };
   const fc = $('#fCheckin');
-  if (fc) fc.onsubmit = async e => { e.preventDefault(); try { await api.saveSetting('checkin_day', fc.day.value); await refreshSettings(); toast('Día del check-in guardado'); } catch(err){ toast(err.message); } };
+  if (fc) fc.onsubmit = async e => { e.preventDefault(); try { await api.saveSetting('checkin_day', fc.day.value); await api.saveSetting('checkin_reminder', fc.on.value); await api.saveSetting('checkin_hour', fc.hour.value); await refreshSettings(); toast('Check-in guardado'); } catch(err){ toast(err.message); } };
   const fh = $('#fHealthUrl');
   if (fh) fh.onsubmit = async e => {
     e.preventDefault(); const u = fh.url.value.trim();
@@ -895,6 +907,7 @@ function clientInfoHTML(c, wmode = 'always'){
     <div class="grid2"><label class="f">Fecha de nacimiento<input class="in" name="birth_date" type="date" value="${esc(c.birth_date)}"></label>
     <label class="f">Altura (cm)<input class="in" name="height_cm" inputmode="decimal" value="${esc(c.height_cm)}"></label></div>
     <label class="f">Objetivo<input class="in" name="goal" value="${esc(c.goal)}"></label>
+    <label class="f">Check-in<select class="in" name="ck_every"><option value="1" ${ckFreq(c.id).every === 1 ? 'selected' : ''}>Cada semana (los ${esc(DOW[checkinDow()])})</option><option value="2" ${ckFreq(c.id).every === 2 ? 'selected' : ''}>Cada 2 semanas (los ${esc(DOW[checkinDow()])})</option></select></label>
     <label class="f">Notas privadas (el cliente no las ve)<textarea class="in" name="notes">${esc(c.notes)}</textarea></label>
     <div class="small muted">Email: ${esc(c.email || '-')}. ${c.consent_at ? `Consentimiento aceptado el ${fmtDate(c.consent_at.slice(0,10), {day:'numeric', month:'long', year:'numeric'})}.` : 'Sin consentimiento registrado.'}</div>
     <button class="btn block" type="submit">Guardar ficha</button></form>
@@ -906,7 +919,16 @@ VIEWS.client.mount = () => {
   if (f) f.onsubmit = async e => {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(f)); fd.height_cm = num(fd.height_cm);
-    try { await api.updateProfile(S.p.id, fd, true); toast('Ficha guardada'); render(); } catch(err){ toast(err.message); }
+    const every = +fd.ck_every; delete fd.ck_every;
+    try {
+      await api.updateProfile(S.p.id, fd, true);
+      if (every !== ckFreq(S.p.id).every){
+        await refreshSettings(); const all = ckFreqAll();
+        if (every === 2) all[S.p.id] = {every: 2, from: checkinWindow().start}; else delete all[S.p.id];
+        await api.saveSetting('checkin_freq', JSON.stringify(all)); await refreshSettings();
+      }
+      toast('Ficha guardada'); render();
+    } catch(err){ toast(err.message); }
   };
   mountProgress();
   if (S.p.tab === 'chat') mountChat(S.p.id);
@@ -1208,9 +1230,9 @@ VIEWS.today = async () => {
   const ws = mets.filter(m => m.weight_kg != null), cur = ws.at(-1), first = ws[0];
   const diff = cur && first && ws.length > 1 ? num(cur.weight_kg) - num(first.weight_kg) : null;
   const n7 = logs.filter(l => daysAgo(l.date) < 7).length;
-  const w = checkinWindow(), ck = checkinOf(mets, w);
+  const w = checkinWindow(S.me.id), ck = checkinOf(mets, w);
   const ckCard = ck
-    ? `<div class="card ck ok"><span class="mini">${icon('check')}</span><div class="grow"><b>Check-in de esta semana enviado</b><div class="small muted">${esc(cap(fmtDate(ck.date, {weekday:'long', day:'numeric', month:'long'})))}. El próximo, el ${esc(w.day)}.</div></div></div>`
+    ? `<div class="card ck ok"><span class="mini">${icon('check')}</span><div class="grow"><b>Check-in enviado</b><div class="small muted">${esc(cap(fmtDate(ck.date, {weekday:'long', day:'numeric', month:'long'})))}. El siguiente es el ${esc(fmtDate(w.next, {weekday:'long', day:'numeric', month:'long'}))}.</div></div></div>`
     : `<div class="card ck due"><div class="row between" style="gap:10px"><div><b>${w.dueToday ? 'Hoy toca tu check-in' : `Check-in pendiente desde el ${esc(w.day)}`}</b>
         <div class="small muted">Peso, medidas, cómo ha ido la semana y fotos si te tocan. 3 minutos.</div></div><span class="mini">${icon('scale')}</span></div>
         <button class="btn gold block" style="margin-top:12px" data-act="checkinNew">Hacer check-in</button></div>`;
@@ -1238,7 +1260,7 @@ VIEWS.today = async () => {
       <div class="stat"><small>Desde el inicio</small><b class="${diff ? (diff > 0 ? 'up' : 'down') : ''}" style="font-size:30px">${diff == null ? '-' : diff === 0 ? '±0' : sign(diff)}</b>${diff == null ? '' : '<i>kg</i>'}</div>
       <div class="stat"><small>Entrenos esta semana</small><b>${n7}</b></div>
     </div>
-    <div class="sec-title">Check-in semanal</div>${ckCard}
+    <div class="sec-title">${w.every === 2 ? 'Check-in cada 2 semanas' : 'Check-in semanal'}</div>${ckCard}
     <div class="sec-title">Entreno de hoy</div>${trainCard}
     ${plan ? `<button class="btn light block" style="margin-top:10px" data-act="tab" data-v="train">Ver todo el plan</button>` : ''}
     ${steps ? `<div class="sec-title">Actividad</div>${steps}` : ''}
@@ -2207,7 +2229,7 @@ const ACT = {
       }
       const p = d._prev, dw = p && m.weight_kg != null ? m.weight_kg - num(p.weight_kg) : null;
       const line = (l, v, u, pv) => v == null ? null : `${l}: ${fmtNum(v)} ${u}${pv != null ? ` (${v - num(pv) === 0 ? '±0' : sign(v - num(pv))})` : ''}`;
-      const body = ['Check-in semanal',
+      const body = ['Check-in',
         line('Peso', m.weight_kg, 'kg', p?.weight_kg), line('Cintura', m.waist_cm, 'cm', p?.waist_cm), line('Cadera', m.hip_cm, 'cm', p?.hip_cm),
         `Entrenos 7 días: ${d._n7}`, `Dieta ${d.diet}/5 · Sueño ${d.sleep}/5 · Estrés ${d.stress}/5 · Energía ${d.energy}/5`,
         up ? `Fotos: ${up}` : null, d.comment.trim() ? `\n${d.comment.trim()}` : null].filter(Boolean).join('\n');
