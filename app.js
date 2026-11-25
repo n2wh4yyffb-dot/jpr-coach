@@ -19,6 +19,17 @@ const parseDate = s => { const [y,m,d] = String(s).slice(0,10).split('-').map(Nu
 const fmtDate = (s, opts={day:'numeric', month:'short'}) => s ? parseDate(s).toLocaleDateString('es-ES', opts).replace('.', '') : '-';
 const daysAgo = s => { if (!s) return null; return Math.round((parseDate(today()) - parseDate(s)) / 864e5); };
 const relDate = s => { const d = daysAgo(s); if (d == null) return 'nunca'; if (d <= 0) return 'hoy'; if (d === 1) return 'ayer'; if (d < 7) return `hace ${d} días`; if (d < 14) return 'hace 1 semana'; if (d < 60) return `hace ${Math.floor(d/7)} semanas`; return fmtDate(s, {day:'numeric', month:'short', year:'numeric'}); };
+/* Check-in semanal: el coach elige el día (Perfil). La "semana de check-in" empieza ese día. */
+const DOW = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+const checkinDow = () => { const v = parseInt((S.settings || {}).checkin_day, 10); return v >= 0 && v <= 6 ? v : 1; };
+function checkinWindow(){
+  const d = parseDate(today()), back = (d.getDay() - checkinDow() + 7) % 7;
+  const st = new Date(d); st.setDate(d.getDate() - back);
+  const iso = new Date(st.getTime() - st.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+  return {start: iso, back, dueToday: back === 0, day: DOW[checkinDow()]};
+}
+const isCheckin = m => m && (m.weight_kg != null || m.waist_cm != null) && (m.sleep != null || m.energy != null);
+const checkinOf = (mets, w = checkinWindow()) => [...mets].reverse().find(m => m.date >= w.start && isCheckin(m)) || null;
 const initials = n => (n || '?').trim().split(/\s+/).slice(0,2).map(w => w[0]).join('').toUpperCase() || '?';
 const firstName = n => (n || '').trim().split(/\s+/)[0] || '';
 const getPath = (o, p) => p.split('.').reduce((a,k) => a?.[k], o);
@@ -56,6 +67,7 @@ const I = {
   user:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   users:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6"/>',
   plus:'<path d="M12 5v14M5 12h14"/>',
+  home:'<path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/>',
   back:'<path d="m15 18-6-6 6-6"/>',
   trash:'<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   copy:'<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
@@ -169,7 +181,7 @@ function SupabaseAPI(){
     async activity(){
       const [logs, mets] = await Promise.all([
         sb.from('workout_logs').select('client_id,date').order('date', {ascending:false}).limit(2000).then(ok),
-        sb.from('body_metrics').select('client_id,date,weight_kg').order('date', {ascending:false}).limit(2000).then(ok),
+        sb.from('body_metrics').select('client_id,date,weight_kg,waist_cm,sleep,energy').order('date', {ascending:false}).limit(2000).then(ok),
       ]);
       return {logs, mets};
     },
@@ -458,7 +470,7 @@ function back(){
   if (prev){ S.view = prev.view; S.p = prev.p; S.draft = null; render(); }
   else home();
 }
-function home(){ S.stack = []; go(S.me?.role === 'coach' ? 'clients' : 'train', {}, false); }
+function home(){ S.stack = []; go(S.me?.role === 'coach' ? 'clients' : 'today', {}, false); }
 window.addEventListener('popstate', () => { if (S.stack.length) back(); });
 
 /* ---------- Render ---------- */
@@ -487,8 +499,8 @@ function topbar(title, sub, {backBtn = false, right = ''} = {}){
   </header><div class="offline ${navigator.onLine ? 'hidden' : ''}" id="offl">Sin conexión. Lo que registres se enviará al volver la conexión.</div>`;
 }
 function clientTabs(active){
-  const t = [['train','Entreno','dumbbell'],['food','Alimentación','food'],['progress','Progreso','chart'],['chat','Mensajes','chat'],['profile','Perfil','user']];
-  return `<nav class="tabs">${t.map(([v,l,i]) => `<button class="${active === v ? 'on' : ''}" data-act="tab" data-v="${v}">${icon(i)}${l}${v === 'chat' ? `<span class="tb-badge hidden" data-badge="${esc(S.me.id)}"></span>` : ''}</button>`).join('')}</nav>`;
+  const t = [['today','Hoy','home'],['train','Entreno','dumbbell'],['food','Dieta','food'],['progress','Progreso','chart'],['chat','Mensajes','chat'],['profile','Perfil','user']];
+  return `<nav class="tabs n6">${t.map(([v,l,i]) => `<button class="${active === v ? 'on' : ''}" data-act="tab" data-v="${v}">${icon(i)}${l}${v === 'chat' ? `<span class="tb-badge hidden" data-badge="${esc(S.me.id)}"></span>` : ''}</button>`).join('')}</nav>`;
 }
 function coachTabs(active){
   const t = [['clients','Clientes','users'],['coachProfile','Perfil','user']];
@@ -614,7 +626,8 @@ VIEWS.pending = async () => authWrap(`<h1>Hola, ${esc(firstName(S.me?.full_name)
    COACH
    ===================================================================== */
 VIEWS.clients = async () => {
-  const [clients, act, bills, hov] = await Promise.all([api.clients(), api.activity(), api.allBilling().catch(() => []), api.healthOverview().catch(() => ({links: [], days: []}))]);
+  const [clients, act, bills, hov] = await Promise.all([api.clients(), api.activity(), api.allBilling().catch(() => []), api.healthOverview().catch(() => ({links: [], days: []})), refreshSettings()]);
+  const cw = checkinWindow(), ckDone = {}; act.mets.forEach(m => { if (m.date >= cw.start && isCheckin(m)) ckDone[m.client_id] = true; });
   const hToday = {}; hov.days.filter(d => d.day === today()).forEach(d => { hToday[d.client_id] = d; });
   const billOf = {}; bills.forEach(b => { billOf[b.client_id] = b; });
   const lastLog = {}, lastW = {};
@@ -631,7 +644,7 @@ VIEWS.clients = async () => {
     return `<div class="card tap item ${c.status === 'pending' ? 'pend' : (late || ps.k === 'late') ? 'late' : ''}" data-act="openClient" data-id="${esc(c.id)}">
       <div class="avatar">${esc(initials(c.full_name))}</div>
       <div class="grow"><b>${esc(c.full_name || c.email)}</b>
-        <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}${hToday[c.id]?.steps != null ? `<span class="hmini">${icon('heart')} ${fmtNum(hToday[c.id].steps, 0)} pasos hoy</span>` : ''}</div></div>
+        <div class="small muted">Último entreno: <span class="${late ? 'up' : ''}">${relDate(d)}</span>${late ? '<span class="late-tag">+7 días</span>' : ''}${lastW[c.id] ? `, ${fmtNum(lastW[c.id].weight_kg)} kg` : ''}${c.status === 'active' ? (ckDone[c.id] ? '<span class="ck-tag ok">Check-in ✓</span>' : cw.back >= 1 ? '<span class="ck-tag">Check-in pendiente</span>' : '') : ''}${hToday[c.id]?.steps != null ? `<span class="hmini">${icon('heart')} ${fmtNum(hToday[c.id].steps, 0)} pasos hoy</span>` : ''}</div></div>
       <span class="cnt hidden" data-badge="${esc(c.id)}" title="Mensajes sin leer"></span>
       ${c.status === 'pending' ? `<button class="btn sm gold" data-act="activate" data-id="${esc(c.id)}">Activar</button>` : c.status === 'active' && ps.k !== 'none' ? `<span class="badge ${ps.cls}">${esc(ps.short)}</span>` : statusBadge(c.status)}
       <span class="chev">›</span></div>`;
@@ -657,7 +670,7 @@ VIEWS.clients.mount = () => {
 /* ---------- Bienvenida (primera vez que entra un cliente) ---------- */
 const WELCOME_DEFAULT = {
   title: '¡Hola, {nombre}!',
-  body: 'Te doy la bienvenida a JPR Coach. Desde hoy tienes aquí todo lo que vamos a trabajar juntos.\n\nEn Entreno está tu plan. Cuando acabes cada sesión, apunta los kilos y las repeticiones de cada serie. Así vemos semana a semana cómo vas mejorando.\n\nEn Alimentación tienes tu plan, con varias opciones en cada comida para que puedas ir cambiando.\n\nUna vez por semana entra en Progreso y registra tus medidas. Cada 2 a 4 semanas, sube también tus fotos.\n\nSi tienes cualquier duda, escríbeme por Mensajes. Te contesto yo personalmente.\n\n¡Vamos a por ello!\nJulián',
+  body: 'Te doy la bienvenida a JPR Coach. Desde hoy tienes aquí todo lo que vamos a trabajar juntos.\n\nEn Entreno está tu plan. Cuando acabes cada sesión, apunta los kilos y las repeticiones de cada serie. Así vemos semana a semana cómo vas mejorando.\n\nEn Dieta tienes tu plan, con varias opciones en cada comida para que puedas ir cambiando.\n\nEn Hoy tienes el entreno que te toca y, una vez por semana, tu check-in: peso, medidas, cómo ha ido la semana y fotos cuando te toquen.\n\nSi tienes cualquier duda, escríbeme por Mensajes. Te contesto yo personalmente.\n\n¡Vamos a por ello!\nJulián',
 };
 async function welcomeText(){
   const st = await api.settings().catch(() => ({}));
@@ -701,6 +714,12 @@ VIEWS.coachProfile = async () => { const wt = await welcomeText(); await refresh
     <label class="f">IBAN<input class="in" name="iban" value="${esc(payCfg().iban ? ibanFmt(payCfg().iban) : '')}" placeholder="ES00 0000 0000 0000 0000 0000" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
     <label class="f">Concepto que deben poner<input class="in" name="concept" value="${esc(payCfg().concept)}" maxlength="60"></label>
     <p class="tiny muted" style="margin:-4px 0 0">{nombre} se cambia por el nombre y apellidos de cada cliente. Con transferencia, tus clientes ven estos datos en lugar del botón de pagar con tarjeta, y tú apuntas cada pago en Pagos, en Pago a mano.</p>
+    <button class="btn" type="submit">${icon('check')} Guardar</button>
+  </form>
+  <div class="sec-title">Check-in semanal</div>
+  <form class="card stack" id="fCheckin">
+    <label class="f">Día del check-in<select class="in" name="day">${[1,2,3,4,5,6,0].map(d => `<option value="${d}" ${checkinDow() === d ? 'selected' : ''}>${cap(DOW[d])}</option>`).join('')}</select></label>
+    <p class="tiny muted" style="margin:-4px 0 0">Ese día tus clientes ven en Hoy que les toca el check-in. Cuando lo envían, te llega un resumen a Mensajes y en tu lista ves quién lo tiene pendiente.</p>
     <button class="btn" type="submit">${icon('check')} Guardar</button>
   </form>
   <div class="sec-title">Salud del iPhone</div>
@@ -748,6 +767,8 @@ VIEWS.coachProfile.mount = () => {
     } catch(err){ toast(err.message); }
     b.disabled = false;
   };
+  const fc = $('#fCheckin');
+  if (fc) fc.onsubmit = async e => { e.preventDefault(); try { await api.saveSetting('checkin_day', fc.day.value); await refreshSettings(); toast('Día del check-in guardado'); } catch(err){ toast(err.message); } };
   const fh = $('#fHealthUrl');
   if (fh) fh.onsubmit = async e => {
     e.preventDefault(); const u = fh.url.value.trim();
@@ -817,7 +838,7 @@ function summaryHTML(c, plans, nuts, logs, mets){
   return `
     ${c.status === 'pending' ? `<div class="card cream row between"><div><b>Cuenta pendiente</b><div class="small muted">Actívala para que pueda usar la app.</div></div><button class="btn gold sm" data-act="activate" data-id="${esc(c.id)}">Activar</button></div>` : ''}
     <div class="stats" style="margin-top:${c.status === 'pending' ? 12 : 0}px">
-      <div class="stat"><small>Peso actual</small><b>${cur ? fmtNum(cur.weight_kg) : '-'}</b>${diff != null ? `<i class="${diff > 0 ? 'up' : 'down'}">${diff > 0 ? '+' : ''}${fmtNum(diff)}</i>` : ''}</div>
+      <div class="stat"><small>Peso actual</small><b>${cur ? fmtNum(cur.weight_kg) : '-'}</b>${cur ? '<i>kg</i>' : ''}${diff != null ? `<i class="${diff > 0 ? 'up' : diff < 0 ? 'down' : ''}">${diff === 0 ? '±0' : sign(diff)} kg</i>` : ''}</div>
       <div class="stat"><small>Entrenos 4 sem.</small><b>${n28}</b></div>
       <div class="stat"><small>Último entreno</small><b style="font-size:16px">${relDate(logs[0]?.date)}</b></div>
     </div>
@@ -1164,6 +1185,100 @@ VIEWS.train = async () => {
     ${docBlock}
     <div class="sec-title">Historial</div>${logsListHTML(logs.slice(0, 6))}
   `, {tabs: clientTabs('train'), sub: CFG.BRAND});
+};
+
+/* ---------- Hoy (pantalla de inicio del cliente) ---------- */
+VIEWS.today = async () => {
+  const [{plan, logs, mets}, bill, h] = await Promise.all([myData(), api.billing(S.me.id).catch(() => null), healthData(S.me.id).catch(() => ({})), refreshSettings()]);
+  const ws = mets.filter(m => m.weight_kg != null), cur = ws.at(-1), first = ws[0];
+  const diff = cur && first && ws.length > 1 ? num(cur.weight_kg) - num(first.weight_kg) : null;
+  const n7 = logs.filter(l => daysAgo(l.date) < 7).length;
+  const w = checkinWindow(), ck = checkinOf(mets, w);
+  const ckCard = ck
+    ? `<div class="card ck ok"><span class="mini">${icon('check')}</span><div class="grow"><b>Check-in de esta semana enviado</b><div class="small muted">${esc(cap(fmtDate(ck.date, {weekday:'long', day:'numeric', month:'long'})))}. El próximo, el ${esc(w.day)}.</div></div></div>`
+    : `<div class="card ck due"><div class="row between" style="gap:10px"><div><b>${w.dueToday ? 'Hoy toca tu check-in' : `Check-in pendiente desde el ${esc(w.day)}`}</b>
+        <div class="small muted">Peso, medidas, cómo ha ido la semana y fotos si te tocan. 3 minutos.</div></div><span class="mini">${icon('scale')}</span></div>
+        <button class="btn gold block" style="margin-top:12px" data-act="checkinNew">Hacer check-in</button></div>`;
+  let trainCard;
+  if (!plan) trainCard = empty('Todavía no tienes plan', `${firstName(CFG.COACH_NAME) || 'Tu coach'} te lo preparará pronto.`);
+  else {
+    const lastDay = logs.find(l => l.plan_id === plan.id)?.day_name;
+    const i = lastDay ? (plan.days.findIndex(d => d.name === lastDay) + 1) % plan.days.length : 0, d = plan.days[i];
+    const doneToday = logs.some(l => l.date === today());
+    trainCard = `<div class="card dcard next"><div class="dhead"><h3>${esc(d.name)}</h3><span class="badge tt">${doneToday ? 'El siguiente' : 'Te toca'}</span></div><div class="dbody">
+      <div class="small muted">${d.exercises.length} ejercicios${doneToday ? '. Hoy ya has entrenado: ¡bien hecho!' : ''}</div>
+      <div class="target">${d.exercises.slice(0, 4).map(x => `<span class="chip">${esc(x.name || 'Ejercicio')}</span>`).join('')}${d.exercises.length > 4 ? `<span class="chip">+${d.exercises.length - 4}</span>` : ''}</div>
+      <button class="btn block gold" style="margin-top:10px" data-act="startDay" data-d="${i}" data-notes="${esc(d.notes || '')}">${icon('play', true)} Empezar entreno</button></div></div>`;
+  }
+  const hd = (h.days || []).find(x => x.day === today());
+  const goal = parseInt((S.settings || {}).steps_goal, 10) || 10000;
+  const steps = h.link && hd?.steps != null ? `<div class="card item"><span class="mini ic-health">${icon('heart')}</span><div class="grow"><b>${fmtNum(hd.steps, 0)} pasos hoy</b>
+      <div class="bar"><i style="width:${Math.min(100, Math.round(hd.steps / goal * 100))}%"></i></div><div class="tiny muted">Meta: ${fmtNum(goal, 0)}</div></div></div>` : '';
+  return shell('Hoy', `
+    <div style="margin-bottom:10px"><h1>Hola, ${esc(firstName(S.me.full_name))}</h1>
+      ${S.me.goal ? `<p class="small" style="margin:4px 0 0"><span class="muted">Tu objetivo:</span> <b>${esc(S.me.goal)}</b></p>` : ''}</div>
+    ${payBanner(bill)}
+    <div class="stats">
+      <div class="stat"><small>Peso actual</small><b>${cur ? fmtNum(num(cur.weight_kg)) : '-'}</b>${cur ? '<i>kg</i>' : ''}</div>
+      <div class="stat"><small>Desde el inicio</small><b class="${diff ? (diff > 0 ? 'up' : 'down') : ''}" style="font-size:30px">${diff == null ? '-' : diff === 0 ? '±0' : sign(diff)}</b>${diff == null ? '' : '<i>kg</i>'}</div>
+      <div class="stat"><small>Entrenos esta semana</small><b>${n7}</b></div>
+    </div>
+    <div class="sec-title">Check-in semanal</div>${ckCard}
+    <div class="sec-title">Entreno de hoy</div>${trainCard}
+    ${plan ? `<button class="btn light block" style="margin-top:10px" data-act="tab" data-v="train">Ver todo el plan</button>` : ''}
+    ${steps ? `<div class="sec-title">Actividad</div>${steps}` : ''}
+  `, {tabs: clientTabs('today'), sub: CFG.BRAND});
+};
+
+/* ---------- Check-in semanal (cliente) ---------- */
+VIEWS.checkin = async () => {
+  if (!S.draft){
+    const {mets, logs} = await myData();
+    const prev = [...mets].reverse().find(m => m.weight_kg != null) || null;
+    S.draft = {id: uid(), client_id: S.me.id, date: today(), weight_kg:'', waist_cm:'', hip_cm:'', body_fat:'', visceral_fat:'', muscle_kg:'', chest_cm:'', arm_cm:'', thigh_cm:'',
+      sleep:null, stress:null, energy:null, diet:null, comment:'', _prev: prev, _n7: logs.filter(l => daysAgo(l.date) < 7).length};
+    S.ckPhotos = {};
+  }
+  const m = S.draft, prev = m._prev;
+  const lastPhoto = (await api.photos(S.me.id).catch(() => []))[0]?.date;
+  const photosDue = !lastPhoto || daysAgo(lastPhoto) >= 14;
+  const scale = (k, l) => `<div><div class="small muted" style="margin-bottom:6px">${l}</div><div class="scale">${[1,2,3,4,5].map(v => `<button class="${m[k] === v ? 'on' : ''}" data-act="mscale" data-k="${k}" data-v="${v}">${v}</button>`).join('')}</div></div>`;
+  const f = (k, l, u, ph = '') => `<label class="f">${l}${u ? ` (${u})` : ''}<input class="in" inputmode="decimal" data-path="${k}" value="${esc(m[k])}" placeholder="${esc(ph)}"></label>`;
+  const step = (n, t) => `<div class="ck-step"><span>${n}</span>${t}</div>`;
+  return shell('Check-in semanal', `
+    <p class="small" style="margin:0 2px 12px">Pésate en ayunas, después de ir al baño. Mide la cintura a la altura del ombligo.</p>
+    ${step(1, 'Peso y medidas')}
+    <div class="card stack">
+      <div class="grid2">${f('weight_kg', 'Peso', 'kg', prev ? fmtNum(num(prev.weight_kg)) : '')}${f('waist_cm', 'Cintura', 'cm', prev?.waist_cm != null ? fmtNum(num(prev.waist_cm)) : '')}</div>
+      ${f('hip_cm', 'Cadera', 'cm', prev?.hip_cm != null ? fmtNum(num(prev.hip_cm)) : '')}
+      ${prev ? `<p class="tiny muted" style="margin:-4px 0 0">En gris, lo que apuntaste la última vez (${esc(relDate(prev.date))}).</p>` : ''}
+      <details><summary class="small">Más medidas (báscula de bioimpedancia, perímetros)</summary>
+        <div class="stack" style="margin-top:10px"><div class="grid3">${f('body_fat','Grasa','%')}${f('visceral_fat','Visceral','nivel')}${f('muscle_kg','Músculo','kg')}</div>
+        <div class="grid3">${f('chest_cm','Pecho','cm')}${f('arm_cm','Brazo','cm')}${f('thigh_cm','Muslo','cm')}</div></div></details>
+    </div>
+    ${step(2, 'Cómo ha ido la semana')}
+    <div class="card stack">
+      <p class="small" style="margin:0">Entrenos en los últimos 7 días: <b>${m._n7}</b></p>
+      ${scale('diet', 'Dieta: 1 casi nada, 5 la he clavado')}
+      ${scale('sleep', 'Sueño: 1 fatal, 5 genial')}
+      ${scale('stress', 'Estrés: 1 nada, 5 mucho')}
+      ${scale('energy', 'Energía: 1 sin fuerzas, 5 a tope')}
+    </div>
+    ${step(3, `Fotos ${photosDue ? '<em class="badge gold" style="font-style:normal">Te tocan</em>' : '<small class="muted">(opcional esta semana)</small>'}`)}
+    <div class="card"><p class="small muted" style="margin:0 0 10px">${photosDue ? 'Frente, espalda y perfil. Misma luz, misma ropa y a la misma hora que las anteriores.' : `Tus últimas fotos son de ${esc(relDate(lastPhoto))}. Las siguientes, cuando pasen 2 semanas.`}</p>
+      <div class="grid3">${['frente','espalda','perfil'].map(p => `<label class="upl"><input type="file" accept="image/*" data-pose="${p}" hidden><span class="upl-box ${S.ckPhotos[p] ? 'has' : ''}" data-prev="${p}" ${S.ckPhotos[p] ? `style="background-image:url('${URL.createObjectURL(S.ckPhotos[p])}')"` : ''}>${icon('camera')}<b>${cap(p)}</b><small>Toca aquí</small></span></label>`).join('')}</div></div>
+    ${step(4, 'Para tu coach')}
+    <label class="f"><textarea class="in" rows="4" data-path="comment" placeholder="Qué tal la semana, dudas, molestias, comidas fuera...">${esc(m.comment)}</textarea></label>
+    <button class="btn gold block" style="margin-top:14px" data-act="checkinSave">${icon('send')} Enviar check-in</button>
+    <p class="tiny muted center">${esc(firstName(CFG.COACH_NAME) || 'Tu coach')} lo recibe en Mensajes con un resumen.</p>
+  `, {backBtn: true, sub: 'Seguimiento'});
+};
+VIEWS.checkin.mount = () => {
+  bindDraft();
+  document.querySelectorAll('.upl input[type=file]').forEach(inp => inp.onchange = () => {
+    const f = inp.files[0]; if (!f) return; S.ckPhotos[inp.dataset.pose] = f;
+    const box = document.querySelector(`[data-prev="${inp.dataset.pose}"]`); box.style.backgroundImage = `url("${URL.createObjectURL(f)}")`; box.classList.add('has');
+  });
 };
 
 /* ---------- Sesión de entreno (cliente) ---------- */
@@ -2058,6 +2173,33 @@ const ACT = {
     } catch(e){ toast(e.message); el.disabled = false; }
   },
   metricNew: () => go('metricNew'),
+  checkinNew: () => go('checkin'),
+  async checkinSave(el){
+    const d = S.draft, K = ['weight_kg','waist_cm','hip_cm','body_fat','visceral_fat','muscle_kg','chest_cm','arm_cm','thigh_cm'];
+    const m = {id: d.id, client_id: d.client_id, date: d.date, sleep: d.sleep, stress: d.stress, energy: d.energy};
+    K.forEach(k => m[k] = num(d[k]));
+    if (m.weight_kg == null && m.waist_cm == null) return toast('Apunta al menos tu peso o tu cintura');
+    if ([d.diet, d.sleep, d.stress, d.energy].some(v => v == null)) return toast('Puntúa dieta, sueño, estrés y energía del 1 al 5');
+    m.notes = [`Dieta ${d.diet}/5`, d.comment.trim()].filter(Boolean).join('\n');
+    el.disabled = true; el.textContent = 'Enviando...';
+    try {
+      const r = await saveOrQueue('metric', m);
+      const photos = Object.entries(S.ckPhotos || {}); let up = 0, photoErr = false;
+      for (const [pose, f] of photos){
+        try { el.textContent = `Subiendo fotos ${up + 1} de ${photos.length}`; await api.uploadPhoto({id: uid(), client_id: d.client_id, date: d.date, pose}, await compressImage(f)); up++; }
+        catch(e){ photoErr = true; }
+      }
+      const p = d._prev, dw = p && m.weight_kg != null ? m.weight_kg - num(p.weight_kg) : null;
+      const line = (l, v, u, pv) => v == null ? null : `${l}: ${fmtNum(v)} ${u}${pv != null ? ` (${v - num(pv) === 0 ? '±0' : sign(v - num(pv))})` : ''}`;
+      const body = ['Check-in semanal',
+        line('Peso', m.weight_kg, 'kg', p?.weight_kg), line('Cintura', m.waist_cm, 'cm', p?.waist_cm), line('Cadera', m.hip_cm, 'cm', p?.hip_cm),
+        `Entrenos 7 días: ${d._n7}`, `Dieta ${d.diet}/5 · Sueño ${d.sleep}/5 · Estrés ${d.stress}/5 · Energía ${d.energy}/5`,
+        up ? `Fotos: ${up}` : null, d.comment.trim() ? `\n${d.comment.trim()}` : null].filter(Boolean).join('\n');
+      await saveOrQueue('msg', {id: uid(), client_id: d.client_id, sender_id: S.me.id, body}).catch(() => {});
+      toast(photoErr ? 'Check-in enviado, pero alguna foto no se ha subido. Súbela luego en Progreso.' : r._pending ? 'Guardado en el móvil. Se enviará al volver la conexión.' : (dw != null && dw < 0 ? '¡Check-in enviado! Vas por buen camino' : '¡Check-in enviado!'), 4000);
+      S.ckPhotos = {}; S.stack = []; go('today', {}, false);
+    } catch(e){ toast(e.message); el.disabled = false; el.textContent = 'Enviar check-in'; }
+  },
   async payTransfer(){
     const b = await api.billing(S.me.id).catch(() => null); if (!b) return;
     modal(`<h2>Pago por transferencia</h2><p class="small muted" style="margin:4px 0 12px">${esc(b.plan_name)}, ${esc(priceTxt(b))}.</p>${transferHTML(b, S.me.full_name)}
