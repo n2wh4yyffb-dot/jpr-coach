@@ -768,8 +768,8 @@ function restTimer(secs, label = ''){
     if (S.view !== 'session'){ clearInterval(restT); bar.remove(); return; }
     const left = Math.max(0, Math.round((end - Date.now()) / 1000));
     bar.className = left ? '' : 'go';
-    bar.innerHTML = left ? `<div class="grow"><small>Descanso${label ? ` · ${esc(label)}` : ''}</small><b>${mmss(left)}</b></div><button data-r="15">+15 s</button><button data-r="x">Saltar</button>`
-      : `<div class="grow"><small>Descanso terminado</small><b>¡Siguiente serie!</b></div><button data-r="x">OK</button>`;
+    bar.innerHTML = left ? `<div class="rb-l"><span>Descanso</span>${label ? `<small>${esc(label)}</small>` : ''}</div><b class="rb-n">${mmss(left)}</b><div class="rb-btns"><button data-r="15">+15 s</button><button data-r="x">Saltar</button></div>`
+      : `<div class="rb-l"><span>¡Ya!</span><small>Descanso terminado</small></div><b class="rb-n">Siguiente serie</b><div class="rb-btns"><button data-r="x">OK</button></div>`;
     bar.querySelectorAll('button').forEach(b => b.onclick = () => b.dataset.r === 'x' ? (clearInterval(restT), bar.remove()) : restTimer(left + 15, label));
     if (!left && !fired){ fired = true; clearInterval(restT); try { navigator.vibrate && navigator.vibrate([300, 150, 300]); } catch(e){}
       try { const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(), g = a.createGain(); o.frequency.value = 880; o.connect(g); g.connect(a.destination); g.gain.setValueAtTime(.25, a.currentTime); g.gain.exponentialRampToValueAtTime(.001, a.currentTime + .6); o.start(); o.stop(a.currentTime + .6); } catch(e){} }
@@ -2786,7 +2786,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 32;
+const APP_VERSION = 33;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
