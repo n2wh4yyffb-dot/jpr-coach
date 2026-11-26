@@ -586,7 +586,14 @@ const bestSet = sets => sets.reduce((b, s) => { const kg = num(s.kg), r = num(s.
 const e1rm = s => s && s.kg ? s.kg * (1 + (s.reps || 1) / 30) : null;
 const volume = log => (log.entries || []).reduce((a, e) => a + (e.sets || []).reduce((b, s) => b + (num(s.kg) || 0) * (num(s.reps) || 0), 0), 0);
 // Repeticiones objetivo de la serie i: "15/12/10/8" da 15, 12, 10, 8
-const repsFor = (t, i) => { const rs = String(t?.reps || '').split('/'); return parseInt(rs[Math.min(i, rs.length - 1)]) || ''; };
+/* Series distintas: si el coach las detalla, cada serie tiene sus reps, kg, RIR y nota */
+const detOf = (t, i) => Array.isArray(t?.detail) && t.detail.length ? t.detail[Math.min(i, t.detail.length - 1)] || {} : null;
+const detReps = t => Array.isArray(t?.detail) && t.detail.length ? t.detail.map(d => d.reps || '-').join('/') : '';
+/* Lo que se propone en cada casilla: con series detalladas manda lo que pone el coach; si no, lo de la última vez */
+const phOf = (t, st, i) => { const d = detOf(t, i), lk = t?.load ? String(parseFloat(String(t.load).replace(',', '.')) || '') : '';
+  return d ? {kg: String(d.kg || st._ph.kg || lk || ''), reps: String(repsFor(t, i) || st._ph.reps || ''), rir: String(d.rir || '')}
+           : {kg: String(st._ph.kg || lk || ''), reps: String(st._ph.reps || repsFor(t, i) || ''), rir: String(t?.rir || st._ph.rir || '')}; };
+const repsFor = (t, i) => { const d = detOf(t, i); if (d && d.reps) return parseInt(d.reps) || d.reps; const rs = String(t?.reps || '').split('/'); return parseInt(rs[Math.min(i, rs.length - 1)]) || ''; };
 /* Explicación corta de cada ejercicio. Se busca por palabras del nombre (de más concreto a más general).
    Si el coach escribe sus notas de técnica, salen además como "Nota del coach". */
 const EX_TIPS = [
@@ -1308,9 +1315,18 @@ VIEWS.planEdit = async () => {
               <input class="in grow" list="exlist" data-path="days.${di}.exercises.${xi}.name" value="${esc(x.name)}" placeholder="Ejercicio">
               <button class="mini" data-act="exMove" data-d="${di}" data-x="${xi}" data-dir="-1" aria-label="Subir">${icon('up')}</button>
               <button class="mini bad" data-act="exDel" data-d="${di}" data-x="${xi}" aria-label="Quitar">${icon('x')}</button></div>
-            <div class="grid4" style="grid-template-columns:.7fr 1.5fr .7fr 1fr 1fr">
+            ${x.detail?.length ? `<div class="det">
+              <div class="det-row det-h"><span>Serie</span><span>Reps</span><span>Kg</span><span>RIR</span><span>Nota de la serie</span><span></span></div>
+              ${x.detail.map((d, k) => `<div class="det-row"><span class="n">${k + 1}</span>
+                ${['reps','kg','rir'].map(f => `<input class="in" data-path="days.${di}.exercises.${xi}.detail.${k}.${f}" value="${esc(d[f] || '')}" ${f !== 'reps' ? 'inputmode="decimal"' : ''}>`).join('')}
+                <input class="in nt" data-path="days.${di}.exercises.${xi}.detail.${k}.note" value="${esc(d.note || '')}" placeholder="Ej.: drop set">
+                <button class="mini bad" data-act="detDel" data-d="${di}" data-x="${xi}" data-k="${k}" aria-label="Quitar serie">${icon('x')}</button></div>`).join('')}
+              <div class="row between" style="margin-top:6px"><button class="btn ghost sm" data-act="detAdd" data-d="${di}" data-x="${xi}">${icon('plus')} Serie</button><button class="btn ghost sm" data-act="detOff" data-d="${di}" data-x="${xi}">Todas iguales</button></div>
+              <div class="grid4" style="grid-template-columns:1fr 2fr;margin-top:6px"><div><div class="lbl">Descanso</div><input class="in" data-path="days.${di}.exercises.${xi}.rest" value="${esc(x.rest || '')}"></div><div></div></div>
+            </div>` : `<div class="grid4" style="grid-template-columns:.7fr 1.5fr .7fr 1fr 1fr">
               ${[['sets','Series'],['reps','Reps'],['rir','RIR'],['rest','Descanso'],['load','Carga']].map(([k,l]) => `<div><div class="lbl">${l}</div><input class="in" data-path="days.${di}.exercises.${xi}.${k}" value="${esc(x[k])}"></div>`).join('')}
             </div>
+            <button class="btn ghost sm" style="margin:4px 0 2px" data-act="detOn" data-d="${di}" data-x="${xi}">${icon('edit')} Series distintas (reps, kg o nota por serie)</button>`}
             <input class="in" data-path="days.${di}.exercises.${xi}.notes" value="${esc(x.notes)}" placeholder="${esc(exTip(x.name) ? 'Explicación automática: ' + exTip(x.name) : 'Notas de técnica (opcional)')}" style="font-size:14px;padding:9px 10px">
             <input class="in" type="url" data-path="days.${di}.exercises.${xi}.video" value="${esc(x.video || '')}" placeholder="Enlace del vídeo (opcional)" style="font-size:14px;padding:9px 10px;margin-top:6px">
           </div>`).join('')}
@@ -1409,7 +1425,7 @@ VIEWS.train = async () => {
         <div class="small muted">${d.exercises.length} ejercicios. ${last ? `Último: ${relDate(last.date)}` : 'Sin hacer todavía'}</div>
         <div class="target">${d.exercises.slice(0, 4).map(x => `<span class="chip">${esc(x.name || 'Ejercicio')}</span>`).join('')}${d.exercises.length > 4 ? `<span class="chip">+${d.exercises.length - 4}</span>` : ''}</div>
         <details class="exlist"><summary>Ver ejercicios, vídeos y cómo se hacen</summary>${d.exercises.map(x => `<div class="exrow">
-          <div class="row between" style="gap:8px;align-items:flex-start"><b>${esc(x.name || 'Ejercicio')}</b><span class="tiny muted" style="white-space:nowrap">${[x.sets && `${esc(x.sets)} x ${esc(x.reps || '-')}`, x.rir && `RIR ${esc(x.rir)}`, restOf(x, d.name) && `desc. ${mmss(restOf(x, d.name))}`].filter(Boolean).join(' · ')}</span></div>
+          <div class="row between" style="gap:8px;align-items:flex-start"><b>${esc(x.name || 'Ejercicio')}</b><span class="tiny muted" style="white-space:nowrap">${[x.detail?.length ? `${x.detail.length} series: ${esc(detReps(x))}` : x.sets && `${esc(x.sets)} x ${esc(x.reps || '-')}`, x.rir && `RIR ${esc(x.rir)}`, restOf(x, d.name) && `desc. ${mmss(restOf(x, d.name))}`].filter(Boolean).join(' · ')}</span></div>
           ${exTip(x.name) ? `<div class="extip">${esc(exTip(x.name))}</div>` : ''}
           ${coachNote(x) ? `<div class="exnote"><b>Nota del coach:</b> ${esc(coachNote(x))}</div>` : ''}
           ${x.video ? `<div class="vids">${videoLinks(x.video, x.name)}</div>` : ''}</div>`).join('')}</details>
@@ -1524,7 +1540,7 @@ VIEWS.session = async () => {
     S.draft = {id: uid(), client_id: S.me.id, plan_id: plan.id, day_name: day.name, _dayNotes: day.notes || '', date: today(), rpe: null, notes: '',
       entries: day.exercises.map(x => {
         const last = lastFor(logs, x.name);
-        const n = Math.max(1, parseInt(x.sets) || (last ? last.sets.length : 3));
+        const n = Math.max(1, x.detail?.length || parseInt(x.sets) || (last ? last.sets.length : 3));
         return {exercise: x.name, _target: x, _last: last, sets: Array.from({length: n}, (_, i) => ({reps: '', kg: '', rir: '', _ph: last?.sets[i] || last?.sets.at(-1) || {}, _prev: last?.sets[i] || null, _i: i, _done: false}))};
       })};
   }
@@ -1537,21 +1553,23 @@ VIEWS.session = async () => {
       const t = e._target || {};
       return `<div class="exs">
         <div class="exs-head"><b>${esc(e.exercise)}</b>
-          <div class="target">${t.sets ? `<span class="chip">${esc(t.sets)} series</span>` : ''}${t.reps ? `<span class="chip">${esc(t.reps)}${/^\d+(\s*[-/]\s*\d+)*$/.test(String(t.reps).trim()) ? ' reps' : ''}</span>` : ''}${t.rir ? `<span class="chip">RIR ${esc(t.rir)}</span>` : ''}${restOf(t, s.day_name) ? `<span class="chip rest">${icon('clock')} Descanso ${mmss(restOf(t, s.day_name))}</span>` : t.rest ? `<span class="chip">${esc(t.rest)}</span>` : ''}${t.load ? `<span class="chip gold">${esc(t.load)}</span>` : ''}</div>
+          <div class="target">${t.sets ? `<span class="chip">${esc(t.sets)} series</span>` : ''}${t.reps && !t.detail?.length ? `<span class="chip">${esc(t.reps)}${/^\d+(\s*[-/]\s*\d+)*$/.test(String(t.reps).trim()) ? ' reps' : ''}</span>` : ''}${t.detail?.length ? `<span class="chip">${esc(detReps(t))} reps</span>` : ''}${t.rir ? `<span class="chip">RIR ${esc(t.rir)}</span>` : ''}${restOf(t, s.day_name) ? `<span class="chip rest">${icon('clock')} Descanso ${mmss(restOf(t, s.day_name))}</span>` : t.rest ? `<span class="chip">${esc(t.rest)}</span>` : ''}${t.load ? `<span class="chip gold">${esc(t.load)}</span>` : ''}</div>
           ${exTip(e.exercise) ? `<div class="extip">${esc(exTip(e.exercise))}</div>` : ''}
           ${coachNote(t) ? `<div class="exnote"><b>Nota del coach:</b> ${esc(coachNote(t))}</div>` : ''}
           ${t.video ? `<div class="vids">${videoLinks(t.video, e.exercise)}</div>` : ''}
           ${e._last ? `<div class="tiny muted" style="margin-top:4px">"Anterior" es lo que hiciste ${esc(relDate(e._last.date))}.</div>` : ''}
         </div>
         <div class="set-head"><span>Serie</span><span>Anterior</span><span>Kg</span><span>Reps</span><span>RIR</span><span></span></div>
-        ${e.sets.map((st, si) => `<div class="set ${st._done ? 'done' : ''}" data-set="${ei}.${si}">
+        ${e.sets.map((st, si) => { const dt = detOf(t, si) || {}; return `<div class="set ${st._done ? 'done' : ''}" data-set="${ei}.${si}">
           <span class="n">${si + 1}</span>
           <span class="prev">${st._prev && (st._prev.kg || st._prev.reps) ? `${esc(st._prev.kg || '-')}<i>×</i>${esc(st._prev.reps || '-')}${st._prev.rir !== undefined && st._prev.rir !== '' ? `<em>RIR ${esc(st._prev.rir)}</em>` : ''}` : '-'}</span>
-          <input class="in" inputmode="decimal" data-path="entries.${ei}.sets.${si}.kg" value="${esc(st.kg)}" placeholder="${esc(st._ph.kg || (t.load && parseFloat(t.load)) || '')}">
-          <input class="in" inputmode="numeric" data-path="entries.${ei}.sets.${si}.reps" value="${esc(st.reps)}" placeholder="${esc(st._ph.reps || repsFor(t, si))}">
-          <input class="in rir" inputmode="numeric" data-path="entries.${ei}.sets.${si}.rir" value="${esc(st.rir ?? '')}" placeholder="${esc(t.rir || st._ph.rir || '')}">
+          <input class="in" inputmode="decimal" data-path="entries.${ei}.sets.${si}.kg" value="${esc(st.kg)}" placeholder="${esc(phOf(t, st, si).kg)}">
+          <input class="in" inputmode="numeric" data-path="entries.${ei}.sets.${si}.reps" value="${esc(st.reps)}" placeholder="${esc(phOf(t, st, si).reps)}">
+          <input class="in rir" inputmode="numeric" data-path="entries.${ei}.sets.${si}.rir" value="${esc(st.rir ?? '')}" placeholder="${esc(phOf(t, st, si).rir)}">
           <button class="tick" data-act="setDone" data-e="${ei}" data-s="${si}" aria-label="Hecha">${icon('check')}</button>
-        </div>`).join('')}
+        </div>
+        ${dt.note ? `<div class="set-cn">Serie ${si + 1}: ${esc(dt.note)}</div>` : ''}
+        <div class="set-note ${st._done || st.note ? '' : 'hidden'}" data-note="${ei}.${si}"><input class="in" data-path="entries.${ei}.sets.${si}.note" value="${esc(st.note || '')}" placeholder="¿Cómo ha ido la serie ${si + 1}? (opcional)"></div>`; }).join('')}
         <div class="exs-foot row between"><button class="btn ghost sm" data-act="setAdd" data-e="${ei}">${icon('plus')} Serie</button>${e.sets.length > 1 ? `<button class="btn ghost sm" data-act="setDel" data-e="${ei}">Quitar serie</button>` : ''}</div>
       </div>`; }).join('')}</div>
     <div class="sec-title">¿Cómo ha ido?</div>
@@ -1730,6 +1748,7 @@ VIEWS.logSummary = async () => {
     const txt = !p ? 'Primera vez' : cls === 'better' ? 'Mejor que la última vez' : cls === 'worse' ? 'Por debajo de la última vez' : 'Igual que la última vez';
     return `<div class="exr"><div class="grow"><b>${esc(e.exercise)}</b>${isPR ? ' <span class="badge gold">Récord</span>' : ''}
         <div class="small muted">${(e.sets || []).map(x => x.kg ? `${esc(x.kg)} x ${esc(x.reps || '-')}` : esc(x.reps || '-')).join(', ')}</div>
+        ${(e.sets || []).some(x => x.note) ? `<div class="setnotes">${(e.sets || []).map((x, k) => x.note ? `<div class="tiny"><b>Serie ${k + 1}:</b> ${esc(x.note)}</div>` : '').join('')}</div>` : ''}
         <div class="small"><span class="${cls}">${txt}</span>${p ? `<span class="muted">. Antes: ${fmtSet(p)} (${relDate(prevE.date)})</span>` : ''}</div></div>
       <div class="exr-top"><small>Mejor serie</small><b>${fmtSet(t)}</b></div></div>`;
   }).join('');
@@ -2371,6 +2390,12 @@ const ACT = {
     await (el.dataset.kind === 'plan' ? api.deletePlan(el.dataset.id) : api.deleteNutrition(el.dataset.id)); toast('Plan borrado'); render();
   },
   exAdd: el => { S.draft.days[el.dataset.d].exercises.push(blankEx()); render(); },
+  detOn: el => { const x = S.draft.days[el.dataset.d].exercises[el.dataset.x], n = Math.max(1, parseInt(x.sets) || 3), kg = String(parseFloat(String(x.load || '').replace(',', '.')) || '');
+    x.detail = Array.from({length: n}, (_, i) => ({reps: String(String(x.reps || '').split('/')[i] ?? String(x.reps || '').split('/').at(-1) ?? '').trim(), kg, rir: x.rir || '', note: ''})); render(); },
+  detAdd: el => { const x = S.draft.days[el.dataset.d].exercises[el.dataset.x], l = x.detail.at(-1) || {}; x.detail.push({reps: l.reps || '', kg: l.kg || '', rir: l.rir || '', note: ''}); render(); },
+  detDel: el => { const x = S.draft.days[el.dataset.d].exercises[el.dataset.x]; if (x.detail.length === 1) return toast('Deja al menos una serie'); x.detail.splice(+el.dataset.k, 1); render(); },
+  detOff: el => { const x = S.draft.days[el.dataset.d].exercises[el.dataset.x], d = x.detail || [];
+    x.sets = String(d.length || x.sets); x.reps = d[0]?.reps || x.reps; x.rir = d[0]?.rir || x.rir; if (d[0]?.kg) x.load = String(d[0].kg).replace('.', ',') + ' kg'; delete x.detail; render(); },
   exDel: el => { const ex = S.draft.days[el.dataset.d].exercises; ex.splice(el.dataset.x, 1); render(); },
   exMove: el => { reorder(S.draft.days[el.dataset.d].exercises, +el.dataset.x, +el.dataset.dir); render(); },
   dayAdd: () => { const n = S.draft.days.length; S.draft.days.push({name: `Día ${String.fromCharCode(65 + n)}`, exercises: [blankEx()]}); render(); },
@@ -2379,7 +2404,12 @@ const ACT = {
   async planSave(el){
     const p = clone(S.draft);
     p.name = p.name.trim() || 'Plan de entrenamiento';
-    p.days = p.days.map(d => ({name: d.name.trim() || 'Día', notes: (d.notes || '').trim(), exercises: d.exercises.filter(x => x.name.trim()).map(x => ({...x, name: x.name.trim(), video: (x.video || '').trim()}))}));
+    p.days = p.days.map(d => ({name: d.name.trim() || 'Día', notes: (d.notes || '').trim(), exercises: d.exercises.filter(x => x.name.trim()).map(x => {
+      const o = {...x, name: x.name.trim(), video: (x.video || '').trim()};
+      if (o.detail?.length){ o.detail = o.detail.map(z => ({reps: String(z.reps || '').trim(), kg: String(z.kg || '').trim().replace('.', ','), rir: String(z.rir || '').trim(), note: String(z.note || '').trim()}));
+        o.sets = String(o.detail.length); const rs = o.detail.map(z => z.reps || '-'); o.reps = rs.every(r => r === rs[0]) ? rs[0] : rs.join('/'); o.load = ''; o.rir = ''; }
+      else delete o.detail;
+      return o; })}));
     if (!p.days.some(d => d.exercises.length)) return toast('Añade al menos un ejercicio con nombre');
     p.id = p.id || uid(); el.disabled = true;
     try { await api.savePlan(p); toast('Plan guardado'); S.p.tab = 'train'; back(); } catch(e){ toast(e.message); el.disabled = false; }
@@ -2399,12 +2429,10 @@ const ACT = {
   setDone: el => {
     const st = S.draft.entries[el.dataset.e].sets[el.dataset.s];
     st._done = !st._done;
-    if (st._done){ if (!st.kg) st.kg = String(st._ph.kg || ''); if (!st.reps) st.reps = String(st._ph.reps || ''); }
-    const t = S.draft.entries[el.dataset.e]._target || {};
-    if (st._done && !st.kg && t.load) st.kg = String(parseFloat(t.load) || '');
-    if (st._done && !st.reps && t.reps) st.reps = String(repsFor(t, +el.dataset.s));
+    const t = S.draft.entries[el.dataset.e]._target || {}, ph = phOf(t, st, +el.dataset.s);
+    if (st._done){ if (!st.kg) st.kg = ph.kg; if (!st.reps) st.reps = ph.reps; if ((st.rir ?? '') === '' && ph.rir) st.rir = String(parseInt(ph.rir) || ph.rir); }
     const row = el.closest('.set'); row.classList.toggle('done', st._done);
-    if (st._done && (st.rir ?? '') === '' && t.rir) st.rir = String(parseInt(t.rir) || '');
+    const nb = document.querySelector(`[data-note="${el.dataset.e}.${el.dataset.s}"]`); if (nb) nb.classList.toggle('hidden', !st._done && !st.note);
     row.querySelector('[data-path$=".kg"]').value = st.kg; row.querySelector('[data-path$=".reps"]').value = st.reps;
     const ri = row.querySelector('[data-path$=".rir"]'); if (ri) ri.value = st.rir ?? '';
     const e = S.draft.entries[el.dataset.e], lastSet = +el.dataset.s === e.sets.length - 1;
@@ -2415,7 +2443,7 @@ const ACT = {
   rpe: el => { S.draft.rpe = +el.dataset.v; document.querySelectorAll('[data-act=rpe]').forEach(b => b.classList.toggle('on', b === el)); },
   async sessionSave(el){
     const s = S.draft;
-    const entries = s.entries.map(e => ({exercise: e.exercise, sets: e.sets.map(st => { const o = {kg: String(st.kg || st._ph.kg || '').replace(',', '.'), reps: String(st.reps || st._ph.reps || '')}; if (String(st.rir ?? '').trim() !== '') o.rir = String(st.rir).trim(); return o; }).filter(st => st.kg || st.reps)})).filter(e => e.sets.length);
+    const entries = s.entries.map(e => ({exercise: e.exercise, sets: e.sets.map((st, si) => { const ph = phOf(e._target || {}, st, si); const o = {kg: String(st.kg || ph.kg || '').replace(',', '.'), reps: String(st.reps || ph.reps || '')}; if (String(st.rir ?? '').trim() !== '') o.rir = String(st.rir).trim(); if (String(st.note || '').trim()) o.note = String(st.note).trim(); return o; }).filter(st => st.kg || st.reps)})).filter(e => e.sets.length);
     if (!entries.length) return toast('Apunta al menos una serie');
     el.disabled = true;
     try {
@@ -2583,7 +2611,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 27;
+const APP_VERSION = 28;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
