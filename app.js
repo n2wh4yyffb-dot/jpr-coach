@@ -586,6 +586,77 @@ const bestSet = sets => sets.reduce((b, s) => { const kg = num(s.kg), r = num(s.
 const e1rm = s => s && s.kg ? s.kg * (1 + (s.reps || 1) / 30) : null;
 const volume = log => (log.entries || []).reduce((a, e) => a + (e.sets || []).reduce((b, s) => b + (num(s.kg) || 0) * (num(s.reps) || 0), 0), 0);
 // Repeticiones objetivo de la serie i: "15/12/10/8" da 15, 12, 10, 8
+/* Biblioteca de vídeos: un vídeo por ejercicio que sale en todos los planes. El vídeo puesto en un plan concreto manda.
+   Mientras el coach no guarde su biblioteca, se usa esta lista de partida (vídeos de YouTube de otros canales). */
+const VIDEO_SEED = {
+  'Curl bayesian unilateral': 'https://youtu.be/6zrTd3FCgDk',
+  'Curl en polea unilateral': 'https://youtu.be/Zp483KdfCrg',
+  'Curl martillo en polea con cuerda': 'https://youtu.be/gL428OTY9Bo',
+  'Extensión de cuádriceps': 'https://youtu.be/GMFFZnDz6wE',
+  'Katana en polea': 'https://youtu.be/LPQp_A5ojOo',
+  'Laterales en polea unilateral': 'https://youtu.be/b1SohZdfzGA',
+  'Peso muerto a una pierna': 'https://youtu.be/Sb-qJslEzBM',
+  'Prensa 45º': 'https://youtu.be/681MG5l5SrA',
+  'Press inclinado en multipower': 'https://youtu.be/WpjYDxwoXA0',
+  'Press plano con mancuernas': 'https://youtu.be/RBqBbx1GvYY',
+  'Pullover con barra': 'https://youtu.be/giCP7zL5nOA',
+  'Sentadilla búlgara': 'https://youtu.be/IdilLr9nyuQ',
+  'Sentadilla Smith': 'https://youtu.be/4r9o_rqFZX4',
+  'Sentadilla': 'https://youtu.be/9D7zI27gFHM',
+  'Sentadilla frontal': 'https://youtu.be/yyIpwHq_eE8',
+  'Prensa de piernas': 'https://youtu.be/681MG5l5SrA',
+  'Peso muerto': 'https://youtu.be/44iTFW8f2HE',
+  'Peso muerto rumano': 'https://youtu.be/UgqrPwoTick',
+  'Hip thrust': 'https://youtu.be/2DVaazHpotc',
+  'Puente de glúteo': 'https://youtu.be/xGzXTn4o0wE',
+  'Zancadas': 'https://youtu.be/y8zPm7gJR_E',
+  'Step up': 'https://youtu.be/E88WpLYnnSk',
+  'Curl femoral tumbado': 'https://youtu.be/sRMO3SbTqjk',
+  'Curl femoral sentado': 'https://youtu.be/CBCPBnMzsMI',
+  'Elevación de gemelos': 'https://youtu.be/1BL4681pIz4',
+  'Press banca': 'https://youtu.be/fqsTgdTPRQU',
+  'Press banca inclinado': 'https://youtu.be/RkveusFgV30',
+  'Press con mancuernas': 'https://youtu.be/RBqBbx1GvYY',
+  'Fondos': 'https://youtu.be/OgjaUueRiII',
+  'Flexiones': 'https://youtu.be/5Mirxt72nLw',
+  'Aperturas': 'https://youtu.be/OrlXQdNwNwM',
+  'Press militar': 'https://youtu.be/WREUHExSxDc',
+  'Press de hombro con mancuernas': 'https://youtu.be/SYA1r1J49R8',
+  'Elevaciones laterales': 'https://youtu.be/aVa9ce3SlSA',
+  'Pájaros': 'https://youtu.be/RG_41P2hP0s',
+  'Face pull': 'https://youtu.be/BwFDZGcM0Hc',
+  'Dominadas': 'https://youtu.be/myYYGyQKLz8',
+  'Jalón al pecho': 'https://youtu.be/oLQj4fySWQQ',
+  'Remo con barra': 'https://youtu.be/VBhFIZWMKUs',
+  'Remo con mancuerna': 'https://youtu.be/fZYGcNtMWSc',
+  'Remo en polea': 'https://youtu.be/duJvtG1qIko',
+  'Pullover en polea': 'https://youtu.be/ESxrBlMSlIk',
+  'Curl de bíceps': 'https://youtu.be/rqy0oxx__sU',
+  'Curl martillo': 'https://youtu.be/mPvlpDWIoDA',
+  'Extensión de tríceps en polea': 'https://youtu.be/1g81uZqcyak'
+};
+const vidAll = () => { const v = (S.settings || {}).ex_videos; if (v == null || v === '') return {...VIDEO_SEED}; try { return JSON.parse(v) || {}; } catch(e){ return {}; } };
+const VSTOP = new Set(['en','con','de','del','a','al','la','el','y','x','kg']);
+const vWords = s => normEx(s).replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(w => w && !VSTOP.has(w) && !/^\d+$/.test(w))
+  .map(w => w.length > 5 && w.endsWith('es') ? w.slice(0, -2) : w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w);
+function vidFor(name){
+  const lib = vidAll(), nw = vWords(name); if (!nw.length) return '';
+  const key = nw.join(' '); let best = null;
+  for (const [k, url] of Object.entries(lib)){ if (!url) continue; const kw = vWords(k); if (!kw.length) continue;
+    if (kw.join(' ') === key) return url;
+    if (kw.every(w => nw.includes(w)) && (!best || kw.length > best.n)) best = {n: kw.length, url}; }
+  return best ? best.url : '';
+}
+const exVideo = x => (x?.video && String(x.video).trim()) || vidFor(x?.name || x?.exercise || '');
+/* Plantillas de entreno del coach (planes o días ya montados para reutilizar) */
+const tplAll = () => { try { return JSON.parse((S.settings || {}).plan_templates || '[]') || []; } catch(e){ return []; } };
+async function tplSaveAll(list){ await api.saveSetting('plan_templates', JSON.stringify(list)); await refreshSettings(); }
+const cleanDays = days => days.map(d => ({name: (d.name || '').trim() || 'Día', notes: (d.notes || '').trim(), exercises: d.exercises.filter(x => (x.name || '').trim()).map(x => {
+      const o = {...x, name: x.name.trim(), video: (x.video || '').trim()};
+      if (o.detail?.length){ o.detail = o.detail.map(z => ({reps: String(z.reps || '').trim(), kg: String(z.kg || '').trim().replace('.', ','), rir: String(z.rir || '').trim(), note: String(z.note || '').trim()}));
+        o.sets = String(o.detail.length); const rs = o.detail.map(z => z.reps || '-'); o.reps = rs.every(r => r === rs[0]) ? rs[0] : rs.join('/'); o.load = ''; o.rir = ''; }
+      else delete o.detail;
+      return o; })}));
 /* Series distintas: si el coach las detalla, cada serie tiene sus reps, kg, RIR y nota */
 const detOf = (t, i) => Array.isArray(t?.detail) && t.detail.length ? t.detail[Math.min(i, t.detail.length - 1)] || {} : null;
 const detReps = t => Array.isArray(t?.detail) && t.detail.length ? t.detail.map(d => d.reps || '-').join('/') : '';
@@ -869,6 +940,11 @@ async function maybeWelcome(){
 
 VIEWS.coachProfile = async () => { const wt = await welcomeText(), wn = await welcomeText(true); await refreshSettings(); return shell('Perfil', `
   <div class="card item"><div class="avatar lg">${esc(initials(S.me.full_name))}</div><div><h2>${esc(S.me.full_name)}</h2><div class="muted small">${esc(S.me.email || '')}</div><span class="badge navy">Coach</span></div></div>
+  <div class="sec-title">Tu biblioteca</div>
+  <div class="card stack">
+    <button class="btn light block" data-act="openTpl">${icon('copy')} Plantillas de entreno (${tplAll().length})</button>
+    <button class="btn light block" data-act="openVidLib">${icon('play', true)} Vídeos de ejercicios (${Object.keys(vidAll()).length})</button>
+  </div>
   <div class="sec-title">Cómo te pagan</div>
   <form class="card stack" id="fPayCfg">
     <label class="f">Forma de pago<select class="in" name="mode">
@@ -1287,20 +1363,26 @@ async function offerImport(imp, cid, src){
 /* ---------- Editor de plan de entreno ---------- */
 const blankEx = () => ({name:'', sets:'3', reps:'10', rir:'', rest:'90 s', load:'', notes:''});
 VIEWS.planEdit = async () => {
+  await refreshSettings();
   if (!S.draft){
-    if (S.p.planId){ const plans = await api.plans(S.p.clientId); S.draft = clone(plans.find(p => p.id === S.p.planId)); }
+    if (S.p.tpl){ const t = tplAll().find(x => x.id === S.p.tplId); S.draft = t ? clone(t) : {id: null, name: 'Nueva plantilla', notes: '', days: [{name: 'Día A', exercises: [blankEx()]}]}; }
+    else if (S.p.planId){ const plans = await api.plans(S.p.clientId); S.draft = clone(plans.find(p => p.id === S.p.planId)); }
     else if (S.p.imported){ const im = S.p.imported; S.draft = {id: null, client_id: S.p.clientId, name: im.name, notes: im.notes || '', active: true,
       days: im.days.map(d => ({name: d.name, notes: (d.notes || []).join('\n'), exercises: d.exercises.length ? d.exercises : [blankEx()]}))}; }
     else S.draft = {id: null, client_id: S.p.clientId, name: 'Bloque 1', notes: '', active: true, days: [{name: 'Día A', exercises: [blankEx()]}]};
   }
   const p = S.draft;
-  return shell(S.p.planId ? 'Editar plan' : 'Nuevo plan', `
+  const tpls = tplAll();
+  return shell(S.p.tpl ? (S.p.tplId ? 'Editar plantilla' : 'Nueva plantilla') : S.p.planId ? 'Editar plan' : 'Nuevo plan', `
     ${S.p.imported ? `<div class="card cream small" style="margin-bottom:14px"><b>Plan leído del PDF${S.p.src ? ` «${esc(S.p.src.replace(/\.pdf$/i, ''))}»` : ''}</b><br>Revisa los ejercicios, las series y las repeticiones antes de guardar. Los calentamientos y la movilidad no se pasan al plan, y el cardio y el core sin series quedan como notas del día. Al guardar, este pasa a ser el plan activo de tu cliente.</div>` : ''}
     <div class="stack">
-      <label class="f">Nombre del plan<input class="in" data-path="name" value="${esc(p.name)}"></label>
+      <label class="f">${S.p.tpl ? 'Nombre de la plantilla' : 'Nombre del plan'}<input class="in" data-path="name" value="${esc(p.name)}"></label>
       <label class="f">Indicaciones generales<textarea class="in" data-path="notes" placeholder="Por ejemplo: 3 días por semana, deja 1-2 repeticiones en reserva">${esc(p.notes)}</textarea></label>
-      <label class="check"><input type="checkbox" data-path="active" ${p.active ? 'checked' : ''}><span>Plan activo (es el que verá el cliente)</span></label>
+      ${S.p.tpl ? '' : `<label class="check"><input type="checkbox" data-path="active" ${p.active ? 'checked' : ''}><span>Plan activo (es el que verá el cliente)</span></label>`}
     </div>
+    ${tpls.length ? `<div class="card stack" style="margin-top:12px"><b class="small">Añadir desde tus plantillas</b>
+      <select class="in" id="tplPick">${tpls.map(t => `<option value="${esc(t.id)}">${esc(t.name)}: todos los días (${t.days.length})</option>${t.days.length > 1 ? t.days.map((d, i) => `<option value="${esc(t.id)}:${i}">${esc(t.name)} › ${esc(d.name)}</option>`).join('') : ''}`).join('')}</select>
+      <button class="btn light" data-act="tplAddDays">${icon('plus')} Añadir al plan</button></div>` : ''}
     <datalist id="exlist">${EXERCISES.map(e => `<option value="${esc(e)}">`).join('')}</datalist>
     ${p.days.map((d, di) => `
       <div class="sec-title">Día ${di + 1}</div>
@@ -1335,8 +1417,9 @@ VIEWS.planEdit = async () => {
       </div>`).join('')}
     <div class="stack" style="margin-top:14px">
       <button class="btn light block" data-act="dayAdd">${icon('plus')} Añadir día</button>
-      <button class="btn gold block" data-act="planSave">${icon('check')} Guardar plan</button>
-    </div>`, {backBtn: true, sub: 'Plan de entrenamiento'});
+      <button class="btn gold block" data-act="planSave">${icon('check')} ${S.p.tpl ? 'Guardar plantilla' : 'Guardar plan'}</button>
+      ${S.p.tpl ? '' : `<button class="btn ghost block" data-act="tplFromDraft">${icon('copy')} Guardar también como plantilla</button>`}
+    </div>`, {backBtn: true, sub: S.p.tpl ? 'Plantilla de entreno' : 'Plan de entrenamiento'});
 };
 VIEWS.planEdit.mount = bindDraft;
 function bindDraft(){
@@ -1406,6 +1489,7 @@ VIEWS.train = async () => {
   const [{plan, logs}, docs, bill] = await Promise.all([myData(), api.docs(S.me.id).catch(() => []), api.billing(S.me.id).catch(() => null)]);
   const durls = await api.fileUrls(docs.map(d => d.path)).catch(() => ({}));
   const docBlock = docsHTML(docs, durls, 'entreno', false);
+  await refreshSettings();
   const hello = `<div style="margin-bottom:6px"><h1>Hola, ${esc(firstName(S.me.full_name))}</h1><p class="muted small" style="margin:2px 0 0">${logs[0] ? `Tu último entreno fue ${relDate(logs[0].date)}.` : '¡A por el primer entreno!'}</p></div>` + payBanner(bill);
   if (!plan) return shell('Entreno', hello + (docBlock || empty('Todavía no tienes plan', `${firstName(CFG.COACH_NAME) || 'Tu coach'} te lo preparará pronto.`)), {tabs: clientTabs('train'), sub: CFG.BRAND});
   const lastDay = logs.find(l => l.plan_id === plan.id)?.day_name;
@@ -1428,7 +1512,7 @@ VIEWS.train = async () => {
           <div class="row between" style="gap:8px;align-items:flex-start"><b>${esc(x.name || 'Ejercicio')}</b><span class="tiny muted" style="white-space:nowrap">${[x.detail?.length ? `${x.detail.length} series: ${esc(detReps(x))}` : x.sets && `${esc(x.sets)} x ${esc(x.reps || '-')}`, x.rir && `RIR ${esc(x.rir)}`, restOf(x, d.name) && `desc. ${mmss(restOf(x, d.name))}`].filter(Boolean).join(' · ')}</span></div>
           ${exTip(x.name) ? `<div class="extip">${esc(exTip(x.name))}</div>` : ''}
           ${coachNote(x) ? `<div class="exnote"><b>Nota del coach:</b> ${esc(coachNote(x))}</div>` : ''}
-          ${x.video ? `<div class="vids">${videoLinks(x.video, x.name)}</div>` : ''}</div>`).join('')}</details>
+          ${exVideo(x) ? `<div class="vids">${videoLinks(exVideo(x), x.name)}</div>` : ''}</div>`).join('')}</details>
         <button class="btn block ${i === nextIdx ? 'gold' : 'light'}" style="margin-top:10px" data-act="startDay" data-d="${i}">${icon('play', true)} Empezar</button>
       </div></div>`; }).join('')}</div>
     ${docBlock}
@@ -1535,6 +1619,7 @@ VIEWS.checkin.mount = () => {
 /* ---------- Sesión de entreno (cliente) ---------- */
 VIEWS.session = async () => {
   if (!S.draft){
+    await refreshSettings();
     const {plan, logs} = await myData();
     const day = plan.days[S.p.dayIdx];
     S.draft = {id: uid(), client_id: S.me.id, plan_id: plan.id, day_name: day.name, _dayNotes: day.notes || '', date: today(), rpe: null, notes: '',
@@ -1556,7 +1641,7 @@ VIEWS.session = async () => {
           <div class="target">${t.sets ? `<span class="chip">${esc(t.sets)} series</span>` : ''}${t.reps && !t.detail?.length ? `<span class="chip">${esc(t.reps)}${/^\d+(\s*[-/]\s*\d+)*$/.test(String(t.reps).trim()) ? ' reps' : ''}</span>` : ''}${t.detail?.length ? `<span class="chip">${esc(detReps(t))} reps</span>` : ''}${t.rir ? `<span class="chip">RIR ${esc(t.rir)}</span>` : ''}${restOf(t, s.day_name) ? `<span class="chip rest">${icon('clock')} Descanso ${mmss(restOf(t, s.day_name))}</span>` : t.rest ? `<span class="chip">${esc(t.rest)}</span>` : ''}${t.load ? `<span class="chip gold">${esc(t.load)}</span>` : ''}</div>
           ${exTip(e.exercise) ? `<div class="extip">${esc(exTip(e.exercise))}</div>` : ''}
           ${coachNote(t) ? `<div class="exnote"><b>Nota del coach:</b> ${esc(coachNote(t))}</div>` : ''}
-          ${t.video ? `<div class="vids">${videoLinks(t.video, e.exercise)}</div>` : ''}
+          ${exVideo({...t, name: e.exercise}) ? `<div class="vids">${videoLinks(exVideo({...t, name: e.exercise}), e.exercise)}</div>` : ''}
           ${e._last ? `<div class="tiny muted" style="margin-top:4px">"Anterior" es lo que hiciste ${esc(relDate(e._last.date))}.</div>` : ''}
         </div>
         <div class="set-head"><span>Serie</span><span>Anterior</span><span>Kg</span><span>Reps</span><span>RIR</span><span></span></div>
@@ -1582,6 +1667,42 @@ VIEWS.session = async () => {
     <p class="tiny muted center">Marca cada serie con el check al terminarla: se rellena con lo que aparece en gris si no lo has cambiado y empieza a contar el descanso. RIR: repeticiones que te quedaban en reserva.</p>`, {backBtn: true, sub: 'Entreno de hoy'});
 };
 VIEWS.session.mount = bindDraft;
+
+
+/* ---------- Biblioteca de vídeos y plantillas (coach) ---------- */
+VIEWS.videoLib = async () => {
+  if (!S.draft){ await refreshSettings(); S.draft = Object.entries(vidAll()).map(([name, url]) => ({name, url})).sort((a, b) => a.name.localeCompare(b.name, 'es')); }
+  const rows = S.draft;
+  return shell('Vídeos de ejercicios', `
+    <p class="small" style="margin:0 2px 10px">Un vídeo por ejercicio. Sale automáticamente en todos los planes que tengan ese ejercicio (también si el nombre lleva más palabras, por ejemplo "Hip thrust con pausa"). Si en un plan pones otro enlace, manda ese. Cuando subas tus vídeos a YouTube, cambia aquí el enlace y se actualiza en todos.</p>
+    <input class="in" id="vlFilter" placeholder="Buscar ejercicio" style="margin-bottom:10px">
+    <div class="list" id="vlist">${rows.map((r, i) => `<div class="card vrow" data-n="${esc(normEx(r.name))}">
+      <div class="row" style="gap:6px"><input class="in grow" data-path="${i}.name" value="${esc(r.name)}" placeholder="Ejercicio">
+        <button class="mini" data-act="vlPlay" data-i="${i}" aria-label="Ver vídeo">${icon('play', true)}</button>
+        <button class="mini bad" data-act="vlDel" data-i="${i}" aria-label="Quitar">${icon('x')}</button></div>
+      <input class="in" type="url" data-path="${i}.url" value="${esc(r.url)}" placeholder="Enlace de YouTube" style="font-size:14px;padding:9px 10px;margin-top:6px">
+    </div>`).join('')}</div>
+    <div class="stack" style="margin-top:12px">
+      <button class="btn light block" data-act="vlAdd">${icon('plus')} Añadir ejercicio</button>
+      <button class="btn gold block" data-act="vlSave">${icon('check')} Guardar biblioteca</button>
+    </div>`, {backBtn: true, sub: `${rows.length} ejercicios`});
+};
+VIEWS.videoLib.mount = () => {
+  bindDraft();
+  const f = $('#vlFilter'); if (f) f.addEventListener('input', () => { const q = normEx(f.value.trim()); document.querySelectorAll('#vlist .vrow').forEach(r => r.classList.toggle('hidden', !!q && !r.dataset.n.includes(q))); });
+};
+VIEWS.tplList = async () => {
+  await refreshSettings(); const all = tplAll();
+  return shell('Plantillas de entreno', `
+    <p class="small" style="margin:0 2px 10px">Entrenamientos ya montados para reutilizar. Al crear o editar el plan de un cliente, elige "Añadir desde tus plantillas" y añade la plantilla entera o solo uno de sus días. Lo que cambies luego en el plan del cliente no toca la plantilla.</p>
+    ${all.length ? `<div class="list">${all.map(t => `<div class="card">
+      <div class="row between"><div class="grow"><h3>${esc(t.name)}</h3>
+        <div class="small muted">${t.days.length} ${t.days.length === 1 ? 'día' : 'días'}, ${t.days.reduce((a, d) => a + d.exercises.length, 0)} ejercicios: ${esc(t.days.map(d => d.name).join(', '))}</div></div></div>
+      <div class="row wrap" style="margin-top:10px"><button class="btn sm" data-act="tplEdit" data-id="${esc(t.id)}">${icon('edit')} Editar</button>
+        <button class="mini bad" data-act="tplDel" data-id="${esc(t.id)}" aria-label="Borrar">${icon('trash')}</button></div></div>`).join('')}</div>`
+      : empty('Aún no tienes plantillas', 'Crea una aquí o abre cualquier plan de un cliente y toca "Guardar también como plantilla".')}
+    <button class="btn gold block" style="margin-top:12px" data-act="tplNew">${icon('plus')} Nueva plantilla</button>`, {backBtn: true, sub: 'Tu biblioteca'});
+};
 
 /* ---------- Alimentación (cliente) ---------- */
 VIEWS.food = async () => {
@@ -2370,6 +2491,34 @@ const ACT = {
   async activate(el, ev){ ev.stopPropagation(); await api.updateProfile(el.dataset.id, {status: 'active'}, true); toast('Cliente activado'); render(); },
   ctab: el => { S.p.tab = el.dataset.v; render(); },
   newPlan: () => go('planEdit', {clientId: S.p.id}),
+  openVidLib: () => go('videoLib'),
+  openTpl: () => go('tplList'),
+  tplNew: () => go('planEdit', {tpl: true}),
+  tplEdit: el => go('planEdit', {tpl: true, tplId: el.dataset.id}),
+  async tplDel(el){ const t = tplAll().find(x => x.id === el.dataset.id); if (!t || !(await confirmBox('Borrar plantilla', `Se borrará "${t.name}". Los planes de tus clientes no cambian.`, 'Borrar', true))) return;
+    try { await tplSaveAll(tplAll().filter(x => x.id !== t.id)); toast('Plantilla borrada'); render(); } catch(e){ toast(e.message); } },
+  tplAddDays(){
+    const v = $('#tplPick')?.value || ''; const [id, di] = v.split(':'); const t = tplAll().find(x => x.id === id); if (!t) return;
+    const days = clone(di != null ? [t.days[+di]] : t.days).map(d => ({...d, exercises: d.exercises.length ? d.exercises : [blankEx()]}));
+    const ds = S.draft.days, blank = ds.length === 1 && ds[0].exercises.every(x => !(x.name || '').trim());
+    if (blank) S.draft.days = days; else ds.push(...days);
+    if (blank && t.notes && !S.draft.notes) S.draft.notes = t.notes;
+    toast(days.length === 1 ? `Añadido "${days[0].name}"` : `Añadidos ${days.length} días`); render();
+  },
+  async tplFromDraft(el){
+    const p = clone(S.draft), days = cleanDays(p.days); if (!days.some(d => d.exercises.length)) return toast('Añade al menos un ejercicio con nombre');
+    el.disabled = true;
+    try { const all = tplAll(), name = (p.name || '').trim() || 'Plantilla', i = all.findIndex(x => x.name === name), t = {id: i >= 0 ? all[i].id : uid(), name, notes: (p.notes || '').trim(), days};
+      if (i >= 0) all[i] = t; else all.push(t); await tplSaveAll(all); toast(i >= 0 ? `Plantilla "${name}" actualizada` : `Guardada como plantilla "${name}"`); }
+    catch(e){ toast(e.message); } el.disabled = false;
+  },
+  vlAdd: () => { S.draft.push({name: '', url: ''}); render(); setTimeout(() => { const ins = document.querySelectorAll('#vlist [data-path$=".name"]'); ins[ins.length - 1]?.focus(); }, 50); },
+  vlDel: el => { S.draft.splice(+el.dataset.i, 1); render(); },
+  vlPlay: el => { const r = S.draft[+el.dataset.i]; if (r?.url) playVideo(r.url, r.name); },
+  async vlSave(el){
+    const out = {}; S.draft.forEach(r => { const n = (r.name || '').trim(), u = (r.url || '').trim(); if (n && u) out[n] = u; });
+    el.disabled = true; try { await api.saveSetting('ex_videos', JSON.stringify(out)); await refreshSettings(); toast('Biblioteca guardada'); } catch(e){ toast(e.message); } el.disabled = false;
+  },
   editPlan: el => go('planEdit', {clientId: S.p.id, planId: el.dataset.id}),
   newNut: () => go('nutEdit', {clientId: S.p.id}),
   editNut: el => go('nutEdit', {clientId: S.p.id, planId: el.dataset.id}),
@@ -2410,13 +2559,13 @@ const ACT = {
   async planSave(el){
     const p = clone(S.draft);
     p.name = p.name.trim() || 'Plan de entrenamiento';
-    p.days = p.days.map(d => ({name: d.name.trim() || 'Día', notes: (d.notes || '').trim(), exercises: d.exercises.filter(x => x.name.trim()).map(x => {
-      const o = {...x, name: x.name.trim(), video: (x.video || '').trim()};
-      if (o.detail?.length){ o.detail = o.detail.map(z => ({reps: String(z.reps || '').trim(), kg: String(z.kg || '').trim().replace('.', ','), rir: String(z.rir || '').trim(), note: String(z.note || '').trim()}));
-        o.sets = String(o.detail.length); const rs = o.detail.map(z => z.reps || '-'); o.reps = rs.every(r => r === rs[0]) ? rs[0] : rs.join('/'); o.load = ''; o.rir = ''; }
-      else delete o.detail;
-      return o; })}));
+    p.days = cleanDays(p.days);
     if (!p.days.some(d => d.exercises.length)) return toast('Añade al menos un ejercicio con nombre');
+    if (S.p.tpl){ el.disabled = true;
+      try { const all = tplAll(), t = {id: p.id || uid(), name: p.name.trim() || 'Plantilla', notes: (p.notes || '').trim(), days: p.days};
+        const i = all.findIndex(x => x.id === t.id); if (i >= 0) all[i] = t; else all.push(t);
+        await tplSaveAll(all); toast('Plantilla guardada'); back(); } catch(e){ toast(e.message); el.disabled = false; }
+      return; }
     p.id = p.id || uid(); el.disabled = true;
     try { await api.savePlan(p); toast('Plan guardado'); S.p.tab = 'train'; back(); } catch(e){ toast(e.message); el.disabled = false; }
   },
@@ -2617,7 +2766,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 29;
+const APP_VERSION = 30;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
