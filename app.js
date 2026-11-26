@@ -587,53 +587,61 @@ const e1rm = s => s && s.kg ? s.kg * (1 + (s.reps || 1) / 30) : null;
 const volume = log => (log.entries || []).reduce((a, e) => a + (e.sets || []).reduce((b, s) => b + (num(s.kg) || 0) * (num(s.reps) || 0), 0), 0);
 // Repeticiones objetivo de la serie i: "15/12/10/8" da 15, 12, 10, 8
 /* Biblioteca de vídeos: un vídeo por ejercicio que sale en todos los planes. El vídeo puesto en un plan concreto manda.
-   Mientras el coach no guarde su biblioteca, se usa esta lista de partida (vídeos de YouTube de otros canales). */
+   Mientras el coach no guarde su biblioteca, se usa esta lista de partida (vídeos cortos de YouTube de otros canales, de 6 a 60 segundos). */
 const VIDEO_SEED = {
-  'Curl bayesian unilateral': 'https://youtu.be/6zrTd3FCgDk',
-  'Curl en polea unilateral': 'https://youtu.be/Zp483KdfCrg',
-  'Curl martillo en polea con cuerda': 'https://youtu.be/gL428OTY9Bo',
-  'Extensión de cuádriceps': 'https://youtu.be/GMFFZnDz6wE',
-  'Katana en polea': 'https://youtu.be/LPQp_A5ojOo',
-  'Laterales en polea unilateral': 'https://youtu.be/b1SohZdfzGA',
-  'Peso muerto a una pierna': 'https://youtu.be/Sb-qJslEzBM',
-  'Prensa 45º': 'https://youtu.be/681MG5l5SrA',
-  'Press inclinado en multipower': 'https://youtu.be/WpjYDxwoXA0',
-  'Press plano con mancuernas': 'https://youtu.be/RBqBbx1GvYY',
-  'Pullover con barra': 'https://youtu.be/giCP7zL5nOA',
-  'Sentadilla búlgara': 'https://youtu.be/IdilLr9nyuQ',
-  'Sentadilla Smith': 'https://youtu.be/4r9o_rqFZX4',
-  'Sentadilla': 'https://youtu.be/9D7zI27gFHM',
-  'Sentadilla frontal': 'https://youtu.be/yyIpwHq_eE8',
-  'Prensa de piernas': 'https://youtu.be/681MG5l5SrA',
-  'Peso muerto': 'https://youtu.be/44iTFW8f2HE',
-  'Peso muerto rumano': 'https://youtu.be/UgqrPwoTick',
-  'Hip thrust': 'https://youtu.be/2DVaazHpotc',
-  'Puente de glúteo': 'https://youtu.be/xGzXTn4o0wE',
-  'Zancadas': 'https://youtu.be/y8zPm7gJR_E',
-  'Step up': 'https://youtu.be/E88WpLYnnSk',
-  'Curl femoral tumbado': 'https://youtu.be/sRMO3SbTqjk',
-  'Curl femoral sentado': 'https://youtu.be/CBCPBnMzsMI',
-  'Elevación de gemelos': 'https://youtu.be/1BL4681pIz4',
-  'Press banca': 'https://youtu.be/fqsTgdTPRQU',
-  'Press banca inclinado': 'https://youtu.be/RkveusFgV30',
-  'Press con mancuernas': 'https://youtu.be/RBqBbx1GvYY',
-  'Fondos': 'https://youtu.be/OgjaUueRiII',
-  'Flexiones': 'https://youtu.be/5Mirxt72nLw',
-  'Aperturas': 'https://youtu.be/OrlXQdNwNwM',
-  'Press militar': 'https://youtu.be/WREUHExSxDc',
-  'Press de hombro con mancuernas': 'https://youtu.be/SYA1r1J49R8',
-  'Elevaciones laterales': 'https://youtu.be/aVa9ce3SlSA',
-  'Pájaros': 'https://youtu.be/RG_41P2hP0s',
-  'Face pull': 'https://youtu.be/BwFDZGcM0Hc',
-  'Dominadas': 'https://youtu.be/myYYGyQKLz8',
-  'Jalón al pecho': 'https://youtu.be/oLQj4fySWQQ',
-  'Remo con barra': 'https://youtu.be/VBhFIZWMKUs',
-  'Remo con mancuerna': 'https://youtu.be/fZYGcNtMWSc',
-  'Remo en polea': 'https://youtu.be/duJvtG1qIko',
-  'Pullover en polea': 'https://youtu.be/ESxrBlMSlIk',
-  'Curl de bíceps': 'https://youtu.be/rqy0oxx__sU',
-  'Curl martillo': 'https://youtu.be/mPvlpDWIoDA',
-  'Extensión de tríceps en polea': 'https://youtu.be/1g81uZqcyak'
+  'Curl bayesian unilateral': 'https://youtube.com/shorts/XGGO0bUmttw',
+  'Curl en polea unilateral': 'https://youtube.com/shorts/nYllyy5Np5A',
+  'Curl martillo en polea con cuerda': 'https://youtube.com/shorts/Oy6M5aQPsko',
+  'Extensión de cuádriceps': 'https://youtube.com/shorts/SguKyjZ6y9Q',
+  'Katana en polea': 'https://youtube.com/shorts/ImsJtwR1FjU',
+  'Laterales en polea unilateral': 'https://youtube.com/shorts/V98wql8IfVA',
+  'Peso muerto a una pierna': 'https://youtube.com/shorts/Z3TRkamr5jA',
+  'Prensa 45º': 'https://youtube.com/shorts/oFsPXMIbNR4',
+  'Prensa de piernas': 'https://youtube.com/shorts/oFsPXMIbNR4',
+  'Press inclinado en multipower': 'https://youtube.com/shorts/PYGyqrw6sTY',
+  'Press plano con mancuernas': 'https://youtube.com/shorts/JcNt92ufIzM',
+  'Press con mancuernas': 'https://youtube.com/shorts/JcNt92ufIzM',
+  'Pullover con barra': 'https://youtube.com/shorts/E7CiaycXvXU',
+  'Pullover en polea': 'https://youtube.com/shorts/E7CiaycXvXU',
+  'Sentadilla búlgara': 'https://youtube.com/shorts/t4-_udCqwqI',
+  'Sentadilla Smith': 'https://youtube.com/shorts/1y3D2I1cquU',
+  'Sentadilla': 'https://youtube.com/shorts/ZeOk4QLP0XQ',
+  'Sentadilla frontal': 'https://youtube.com/shorts/nOilmCM2TPI',
+  'Peso muerto': 'https://youtube.com/shorts/0XL4cZR2Ink',
+  'Peso muerto rumano': 'https://youtube.com/shorts/QjP9g7M_Idg',
+  'Hip thrust': 'https://youtube.com/shorts/zaSzxo6xleY',
+  'Puente de glúteo': 'https://youtube.com/shorts/M-mnbbpJmXI',
+  'Zancadas': 'https://youtube.com/shorts/PP8o3mliQMY',
+  'Step up': 'https://youtube.com/shorts/yHyrYdgE36M',
+  'Curl femoral tumbado': 'https://youtube.com/shorts/nmqG-tIr0hc',
+  'Curl femoral sentado': 'https://youtube.com/shorts/-iHCTKdmmz8',
+  'Elevación de gemelos': 'https://youtube.com/shorts/QEUZrRbX66E',
+  'Press banca': 'https://youtube.com/shorts/g4Ah9uYn8pI',
+  'Press banca inclinado': 'https://youtube.com/shorts/HboHdKXrYG8',
+  'Fondos': 'https://youtube.com/shorts/LbsqDJe4EFc',
+  'Flexiones': 'https://youtube.com/shorts/S44aVCTshH8',
+  'Aperturas': 'https://youtube.com/shorts/C7Nq4DgV9Mg',
+  'Press militar': 'https://youtube.com/shorts/VXkvPm-vIlQ',
+  'Press de hombro con mancuernas': 'https://youtube.com/shorts/8yY0zXMjBd0',
+  'Elevaciones laterales': 'https://youtube.com/shorts/Vh_Kjw3O-DQ',
+  'Pájaros': 'https://youtube.com/shorts/AkNlVr1JqsI',
+  'Face pull': 'https://youtube.com/shorts/CkIoZeOKfPw',
+  'Dominadas': 'https://youtube.com/shorts/6E3tt4ajzSs',
+  'Jalón al pecho': 'https://youtube.com/shorts/TcYwpzaRS1I',
+  'Remo con barra': 'https://youtube.com/shorts/sr_U0jBE89A',
+  'Remo con mancuerna': 'https://youtube.com/shorts/hOBTkGA4mHE',
+  'Remo en polea': 'https://youtube.com/shorts/D_UXjlrZIBw',
+  'Curl de bíceps': 'https://youtube.com/shorts/WrpQYs_n_Pw',
+  'Curl martillo': 'https://youtube.com/shorts/07D2fR_0iro',
+  'Extensión de tríceps en polea': 'https://youtube.com/shorts/FELcywKlkqE',
+  'Press francés': 'https://youtube.com/shorts/CAUWI4sNPKk',
+  'Plancha': 'https://youtube.com/shorts/3AM7L2k7BEw',
+  'Plancha lateral': 'https://youtube.com/shorts/fNsxKTKfMNI',
+  'Rueda abdominal': 'https://youtube.com/shorts/pTOsnzYMiXc',
+  'Crunch en polea': 'https://youtube.com/shorts/xYIVO1nCm3E',
+  'Pallof press': 'https://youtube.com/shorts/o_CxFP4FJhA',
+  'Kettlebell swing': 'https://youtube.com/shorts/ao4TqSb0zxQ',
+  'Farmer walk': 'https://youtube.com/shorts/_HF4zc5t6A8'
 };
 const vidAll = () => { const v = (S.settings || {}).ex_videos; if (v == null || v === '') return {...VIDEO_SEED}; try { return JSON.parse(v) || {}; } catch(e){ return {}; } };
 const VSTOP = new Set(['en','con','de','del','a','al','la','el','y','x','kg']);
@@ -728,7 +736,7 @@ const videoLinks = (v, title = '') => String(v || '').split(/\s+/).filter(u => /
 function playVideo(u, title = ''){
   const id = ytId(u), vertical = /\/shorts\//i.test(u);
   const player = id
-    ? `<iframe src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&playsinline=1&rel=0&modestbranding=1&loop=1&playlist=${id}" title="${esc(title || 'Vídeo del ejercicio')}" referrerpolicy="strict-origin-when-cross-origin" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`
+    ? `<iframe src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1&loop=1&playlist=${id}" title="${esc(title || 'Vídeo del ejercicio')}" referrerpolicy="strict-origin-when-cross-origin" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`
     : `<video src="${esc(u)}" controls autoplay loop playsinline muted></video>`;
   modal(`${title ? `<h2 style="margin-bottom:10px">${esc(title)}</h2>` : ''}<div class="vplayer ${vertical ? 'v' : ''}">${player}</div>
     <div class="row between" style="margin-top:12px;gap:10px">${id ? `<a class="small muted" href="${esc(u)}" target="_blank" rel="noopener">¿No carga? Ábrelo en YouTube</a>` : '<span></span>'}<button class="btn" data-x="ok">Cerrar</button></div>`,
@@ -2766,7 +2774,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 30;
+const APP_VERSION = 31;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
