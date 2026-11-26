@@ -2391,7 +2391,13 @@ const ACT = {
   },
   exAdd: el => { S.draft.days[el.dataset.d].exercises.push(blankEx()); render(); },
   detOn: el => { const x = S.draft.days[el.dataset.d].exercises[el.dataset.x], n = Math.max(1, parseInt(x.sets) || 3), kg = String(parseFloat(String(x.load || '').replace(',', '.')) || '');
-    x.detail = Array.from({length: n}, (_, i) => ({reps: String(String(x.reps || '').split('/')[i] ?? String(x.reps || '').split('/').at(-1) ?? '').trim(), kg, rir: x.rir || '', note: ''})); render(); },
+    /* "12/10/8", "aprox - 10 - Back off" o "12, 10, 8": cada parte va a su serie; lo que no es un número va a la nota */
+    const parts = String(x.reps || '').split(/\s*(?:\/|,|;|\s-\s)\s*/).map(z => z.trim()).filter(Boolean);
+    const isR = z => /^\d+(\s*-\s*\d+)?(\s*(reps?|rep\.?))?$/i.test(z);
+    const nice = z => /^aprox/i.test(z) ? 'Aproximación' : cap1(z);
+    const m = Math.max(n, parts.length > 1 ? parts.length : 0);
+    x.detail = Array.from({length: m}, (_, i) => { const z = parts.length > 1 ? parts[i] ?? '' : parts[0] ?? '';
+      return {reps: isR(z) ? z.replace(/\s*reps?\.?$/i, '') : '', kg, rir: x.rir || '', note: z && !isR(z) ? nice(z) : ''}; }); render(); },
   detAdd: el => { const x = S.draft.days[el.dataset.d].exercises[el.dataset.x], l = x.detail.at(-1) || {}; x.detail.push({reps: l.reps || '', kg: l.kg || '', rir: l.rir || '', note: ''}); render(); },
   detDel: el => { const x = S.draft.days[el.dataset.d].exercises[el.dataset.x]; if (x.detail.length === 1) return toast('Deja al menos una serie'); x.detail.splice(+el.dataset.k, 1); render(); },
   detOff: el => { const x = S.draft.days[el.dataset.d].exercises[el.dataset.x], d = x.detail || [];
@@ -2611,7 +2617,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 28;
+const APP_VERSION = 29;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
