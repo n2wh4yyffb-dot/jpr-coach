@@ -68,7 +68,7 @@ const checkinOf = (mets, w = checkinWindow(S.me?.id)) => [...mets].reverse().fin
 const initials = n => (n || '?').trim().split(/\s+/).slice(0,2).map(w => w[0]).join('').toUpperCase() || '?';
 const firstName = n => (n || '').trim().split(/\s+/)[0] || '';
 const getPath = (o, p) => p.split('.').reduce((a,k) => a?.[k], o);
-const setPath = (o, p, v) => { const ks = p.split('.'); let t = o; for (let i = 0; i < ks.length - 1; i++) t = t[ks[i]]; t[ks[ks.length-1]] = v; };
+const setPath = (o, p, v) => { const ks = p.split('.'); let t = o; for (let i = 0; i < ks.length - 1; i++){ if (t[ks[i]] == null) t[ks[i]] = /^\d+$/.test(ks[i + 1]) ? [] : {}; t = t[ks[i]]; } t[ks[ks.length-1]] = v; };
 
 function toast(msg, ms = 2400){
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -672,6 +672,11 @@ const detReps = t => Array.isArray(t?.detail) && t.detail.length ? t.detail.map(
 const phOf = (t, st, i) => { const d = detOf(t, i), lk = t?.load ? String(parseFloat(String(t.load).replace(',', '.')) || '') : '';
   return d ? {kg: String(d.kg || st._ph.kg || lk || ''), reps: String(repsFor(t, i) || st._ph.reps || ''), rir: String(d.rir || '')}
            : {kg: String(st._ph.kg || lk || ''), reps: String(st._ph.reps || repsFor(t, i) || ''), rir: String(t?.rir || st._ph.rir || '')}; };
+/* Serie de back-off: la nota de la serie dice "back off" (o "drop"). Se apunta la serie inicial y hasta 3 bajadas de peso. */
+const BO_DROPS = 3;
+const isBackoff = d => /back\s*-?\s*off|backoff|drop\s*set/i.test(d?.note || '');
+const dropsOf = st => (st.drops || []).filter(d => d && (String(d.kg || '').trim() || String(d.reps || '').trim()))
+  .map(d => ({kg: String(d.kg || '').trim().replace(',', '.'), reps: String(d.reps || '').trim()}));
 const repsFor = (t, i) => { const d = detOf(t, i); if (d && d.reps) return parseInt(d.reps) || d.reps; const rs = String(t?.reps || '').split('/'); return parseInt(rs[Math.min(i, rs.length - 1)]) || ''; };
 /* Explicación corta de cada ejercicio. Se busca por palabras del nombre (de más concreto a más general).
    Si el coach escribe sus notas de técnica, salen además como "Nota del coach". */
@@ -1661,7 +1666,13 @@ VIEWS.session = async () => {
           <input class="in rir" inputmode="numeric" data-path="entries.${ei}.sets.${si}.rir" value="${esc(st.rir ?? '')}" placeholder="${esc(phOf(t, st, si).rir)}">
           <button class="tick" data-act="setDone" data-e="${ei}" data-s="${si}" aria-label="Hecha">${icon('check')}</button>
         </div>
-        ${dt.note ? `<div class="set-cn">Serie ${si + 1}: ${esc(dt.note)}</div>` : ''}
+        ${isBackoff(dt) ? Array.from({length: BO_DROPS}, (_, k) => { const d = (st.drops || [])[k] || {}, pd = (st._ph.drops || [])[k] || {}, pv = (st._prev?.drops || [])[k];
+          return `<div class="set drop ${st._done ? 'done' : ''}"><span class="n">↓${k + 1}</span>
+            <span class="prev">${pv && (pv.kg || pv.reps) ? `${esc(pv.kg || '-')}<i>×</i>${esc(pv.reps || '-')}` : '<span class="muted">Bajada</span>'}</span>
+            <input class="in" inputmode="decimal" data-path="entries.${ei}.sets.${si}.drops.${k}.kg" value="${esc(d.kg || '')}" placeholder="${esc(pd.kg || 'kg')}">
+            <input class="in" inputmode="numeric" data-path="entries.${ei}.sets.${si}.drops.${k}.reps" value="${esc(d.reps || '')}" placeholder="${esc(pd.reps || 'reps')}">
+            <span></span><span></span></div>`; }).join('') : ''}
+        ${dt.note ? `<div class="set-cn">Serie ${si + 1}: ${esc(dt.note)}${isBackoff(dt) ? '. Apunta la serie inicial arriba y cada bajada de peso en ↓1, ↓2 y ↓3 (la última si la haces).' : ''}</div>` : ''}
         <div class="set-note ${st._done || st.note ? '' : 'hidden'}" data-note="${ei}.${si}"><input class="in" data-path="entries.${ei}.sets.${si}.note" value="${esc(st.note || '')}" placeholder="¿Cómo ha ido la serie ${si + 1}? (opcional)"></div>`; }).join('')}
         <div class="exs-foot row between"><button class="btn ghost sm" data-act="setAdd" data-e="${ei}">${icon('plus')} Serie</button>${e.sets.length > 1 ? `<button class="btn ghost sm" data-act="setDel" data-e="${ei}">Quitar serie</button>` : ''}</div>
       </div>`; }).join('')}</div>
@@ -1876,7 +1887,7 @@ VIEWS.logSummary = async () => {
     if (cls === 'better') better++; if (isPR) records++;
     const txt = !p ? 'Primera vez' : cls === 'better' ? 'Mejor que la última vez' : cls === 'worse' ? 'Por debajo de la última vez' : 'Igual que la última vez';
     return `<div class="exr"><div class="grow"><b>${esc(e.exercise)}</b>${isPR ? ' <span class="badge gold">Récord</span>' : ''}
-        <div class="small muted">${(e.sets || []).map(x => x.kg ? `${esc(x.kg)} x ${esc(x.reps || '-')}` : esc(x.reps || '-')).join(', ')}</div>
+        <div class="small muted">${(e.sets || []).map(x => (x.kg ? `${esc(x.kg)} x ${esc(x.reps || '-')}` : esc(x.reps || '-')) + (x.drops?.length ? ' → ' + x.drops.map(d => d.kg ? `${esc(d.kg)} x ${esc(d.reps || '-')}` : esc(d.reps || '-')).join(' → ') : '')).join(', ')}</div>
         ${(e.sets || []).some(x => x.note) ? `<div class="setnotes">${(e.sets || []).map((x, k) => x.note ? `<div class="tiny"><b>Serie ${k + 1}:</b> ${esc(x.note)}</div>` : '').join('')}</div>` : ''}
         <div class="small"><span class="${cls}">${txt}</span>${p ? `<span class="muted">. Antes: ${fmtSet(p)} (${relDate(prevE.date)})</span>` : ''}</div></div>
       <div class="exr-top"><small>Mejor serie</small><b>${fmtSet(t)}</b></div></div>`;
@@ -2551,7 +2562,7 @@ const ACT = {
     /* "12/10/8", "aprox - 10 - Back off" o "12, 10, 8": cada parte va a su serie; lo que no es un número va a la nota */
     const parts = String(x.reps || '').split(/\s*(?:\/|,|;|\s-\s)\s*/).map(z => z.trim()).filter(Boolean);
     const isR = z => /^\d+(\s*-\s*\d+)?(\s*(reps?|rep\.?))?$/i.test(z);
-    const nice = z => /^aprox/i.test(z) ? 'Aproximación' : cap1(z);
+    const nice = z => /^aprox/i.test(z) ? 'Aproximación' : cap(z);
     const m = Math.max(n, parts.length > 1 ? parts.length : 0);
     x.detail = Array.from({length: m}, (_, i) => { const z = parts.length > 1 ? parts[i] ?? '' : parts[0] ?? '';
       return {reps: isR(z) ? z.replace(/\s*reps?\.?$/i, '') : '', kg, rir: x.rir || '', note: z && !isR(z) ? nice(z) : ''}; }); render(); },
@@ -2595,6 +2606,7 @@ const ACT = {
     const t = S.draft.entries[el.dataset.e]._target || {}, ph = phOf(t, st, +el.dataset.s);
     if (st._done){ if (!st.kg) st.kg = ph.kg; if (!st.reps) st.reps = ph.reps; if ((st.rir ?? '') === '' && ph.rir) st.rir = String(parseInt(ph.rir) || ph.rir); }
     const row = el.closest('.set'); row.classList.toggle('done', st._done);
+    for (let x = row.nextElementSibling; x && x.classList.contains('drop'); x = x.nextElementSibling) x.classList.toggle('done', st._done);
     const nb = document.querySelector(`[data-note="${el.dataset.e}.${el.dataset.s}"]`); if (nb) nb.classList.toggle('hidden', !st._done && !st.note);
     row.querySelector('[data-path$=".kg"]').value = st.kg; row.querySelector('[data-path$=".reps"]').value = st.reps;
     const ri = row.querySelector('[data-path$=".rir"]'); if (ri) ri.value = st.rir ?? '';
@@ -2606,7 +2618,7 @@ const ACT = {
   rpe: el => { S.draft.rpe = +el.dataset.v; document.querySelectorAll('[data-act=rpe]').forEach(b => b.classList.toggle('on', b === el)); },
   async sessionSave(el){
     const s = S.draft;
-    const entries = s.entries.map(e => ({exercise: e.exercise, sets: e.sets.map((st, si) => { const ph = phOf(e._target || {}, st, si); const o = {kg: String(st.kg || ph.kg || '').replace(',', '.'), reps: String(st.reps || ph.reps || '')}; if (String(st.rir ?? '').trim() !== '') o.rir = String(st.rir).trim(); if (String(st.note || '').trim()) o.note = String(st.note).trim(); return o; }).filter(st => st.kg || st.reps)})).filter(e => e.sets.length);
+    const entries = s.entries.map(e => ({exercise: e.exercise, sets: e.sets.map((st, si) => { const ph = phOf(e._target || {}, st, si); const o = {kg: String(st.kg || ph.kg || '').replace(',', '.'), reps: String(st.reps || ph.reps || '')}; if (String(st.rir ?? '').trim() !== '') o.rir = String(st.rir).trim(); if (String(st.note || '').trim()) o.note = String(st.note).trim(); const dr = dropsOf(st); if (dr.length) o.drops = dr; return o; }).filter(st => st.kg || st.reps)})).filter(e => e.sets.length);
     if (!entries.length) return toast('Apunta al menos una serie');
     el.disabled = true;
     try {
@@ -2774,7 +2786,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 31;
+const APP_VERSION = 32;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
