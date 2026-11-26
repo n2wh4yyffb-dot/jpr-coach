@@ -756,7 +756,9 @@ function restSecs(txt){
   m = t.match(/^\s*(\d+)\s*$/); if (m) return +m[1] <= 10 ? +m[1] * 60 : +m[1];
   return 0;
 }
-const restOf = (t, dayName) => { const own = restSecs(t?.rest); if (own) return own; const m = String(dayName || '').match(/descansos?\s*:?\s*([^)]+)/i); return m ? restSecs(m[1]) : 0; };
+/* Descanso: el del ejercicio, si no el del nombre del día y, si no hay ninguno, 90 s por defecto */
+const REST_DEFAULT = 90;
+const restOf = (t, dayName) => { const own = restSecs(t?.rest); if (own) return own; const m = String(dayName || '').match(/descansos?\s*:?\s*([^)]+)/i); return (m && restSecs(m[1])) || REST_DEFAULT; };
 const mmss = n => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
 let restT = null;
 function restTimer(secs, label = ''){
@@ -2786,7 +2788,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 34;
+const APP_VERSION = 35;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
