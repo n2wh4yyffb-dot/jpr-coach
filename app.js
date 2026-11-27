@@ -176,7 +176,7 @@ const EXERCISES = ['Sentadilla','Sentadilla frontal','Sentadilla búlgara','Pren
 const TABLES = {
   workout_plans: ['id','client_id','name','notes','days','active'],
   nutrition_plans: ['id','client_id','name','kcal','protein_g','carbs_g','fat_g','water_l','meals','guidelines','active'],
-  workout_logs: ['id','client_id','plan_id','day_name','date','entries','rpe','notes'],
+  workout_logs: ['id','client_id','plan_id','day_name','date','entries','rpe','notes','duration_min'],
   body_metrics: ['id','client_id','date','weight_kg','height_cm','waist_cm','hip_cm','chest_cm','arm_cm','thigh_cm','body_fat','visceral_fat','muscle_kg','sleep','stress','energy','notes'],
   messages: ['id','client_id','sender_id','body'],
   progress_photos: ['id','client_id','date','pose','path','notes'],
@@ -761,6 +761,17 @@ const REST_DEFAULT = 90;
 const restOf = (t, dayName) => { const own = restSecs(t?.rest); if (own) return own; const m = String(dayName || '').match(/descansos?\s*:?\s*([^)]+)/i); return (m && restSecs(m[1])) || REST_DEFAULT; };
 const mmss = n => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
 let restT = null;
+/* Tiempo total de la sesión: empieza al abrir el entreno y se guarda en minutos al terminar.
+   La hora de inicio se guarda en el móvil para que no se pierda si la app se recarga a mitad. */
+let sessT = null;
+const hms = n => { const h = Math.floor(n / 3600), m = Math.floor(n % 3600 / 60), x = n % 60; return h ? `${h}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}` : `${m}:${String(x).padStart(2, '0')}`; };
+const t0Key = (cid, plan, day) => `jpr-t0-${cid}-${plan}-${normEx(day || '')}`;
+function sessT0(cid, plan, day){
+  const k = t0Key(cid, plan, day); let v = 0; try { v = +localStorage.getItem(k) || 0; } catch(e){}
+  if (!v || Date.now() - v > 5 * 3600e3){ v = Date.now(); try { localStorage.setItem(k, String(v)); } catch(e){} }
+  return v;
+}
+const durTxt = m => m >= 60 ? `${Math.floor(m / 60)} h ${m % 60 ? `${m % 60} min` : ''}`.trim() : `${m} min`;
 function restTimer(secs, label = ''){
   clearInterval(restT); let bar = document.getElementById('restbar');
   if (!secs){ bar && bar.remove(); return; }
@@ -1637,7 +1648,7 @@ VIEWS.session = async () => {
     await refreshSettings();
     const {plan, logs} = await myData();
     const day = plan.days[S.p.dayIdx];
-    S.draft = {id: uid(), client_id: S.me.id, plan_id: plan.id, day_name: day.name, _dayNotes: day.notes || '', date: today(), rpe: null, notes: '',
+    S.draft = {id: uid(), client_id: S.me.id, plan_id: plan.id, day_name: day.name, _dayNotes: day.notes || '', _t0: sessT0(S.me.id, plan.id, day.name), date: today(), rpe: null, notes: '',
       entries: day.exercises.map(x => {
         const last = lastFor(logs, x.name);
         const n = Math.max(1, x.detail?.length || parseInt(x.sets) || (last ? last.sets.length : 3));
@@ -1685,9 +1696,15 @@ VIEWS.session = async () => {
       <label class="f">Notas o molestias<textarea class="in" data-path="notes" placeholder="Cómo te has sentido, alguna molestia...">${esc(s.notes)}</textarea></label>
     </div>
     <button class="btn gold block" style="margin-top:14px" data-act="sessionSave">${icon('check')} Guardar entreno</button>
-    <p class="tiny muted center">Marca cada serie con el check al terminarla: se rellena con lo que aparece en gris si no lo has cambiado y empieza a contar el descanso. RIR: repeticiones que te quedaban en reserva.</p>`, {backBtn: true, sub: 'Entreno de hoy'});
+    <p class="tiny muted center">Marca cada serie con el check al terminarla: se rellena con lo que aparece en gris si no lo has cambiado y empieza a contar el descanso. RIR: repeticiones que te quedaban en reserva.</p>`, {backBtn: true, sub: 'Entreno de hoy', right: s._t0 ? `<div class="sesst" title="Tiempo de sesión"><small>Sesión</small><b id="sessClock">${hms(Math.floor((Date.now() - s._t0) / 1000))}</b></div>` : ''});
 };
-VIEWS.session.mount = bindDraft;
+VIEWS.session.mount = () => {
+  bindDraft();
+  clearInterval(sessT);
+  sessT = setInterval(() => { const el = document.getElementById('sessClock');
+    if (S.view !== 'session' || !el || !S.draft?._t0){ if (S.view !== 'session') clearInterval(sessT); return; }
+    el.textContent = hms(Math.floor((Date.now() - S.draft._t0) / 1000)); }, 1000);
+};
 
 
 /* ---------- Biblioteca de vídeos y plantillas (coach) ---------- */
@@ -1803,7 +1820,7 @@ function logsListHTML(logs, canDelete = false){
   if (!logs.length) return empty('Sin entrenos registrados', 'Aparecerán aquí en cuanto se guarde el primero.');
   return `<div class="list">${logs.map(l => `
     <details class="card"><summary class="row between" style="cursor:pointer;list-style:none">
-      <div class="grow"><b>${esc(l.day_name || 'Entreno')}</b>${l._pending ? ' <span class="badge warn">pendiente</span>' : ''}<div class="small muted">${fmtDate(l.date, {weekday:'short', day:'numeric', month:'short'})}${l.rpe ? `, RPE ${esc(l.rpe)}` : ''}, ${fmtNum(volume(l) / 1000, 1)} t</div></div><span class="chev">›</span></summary>
+      <div class="grow"><b>${esc(l.day_name || 'Entreno')}</b>${l._pending ? ' <span class="badge warn">pendiente</span>' : ''}<div class="small muted">${fmtDate(l.date, {weekday:'short', day:'numeric', month:'short'})}${l.rpe ? `, RPE ${esc(l.rpe)}` : ''}${l.duration_min ? `, ${durTxt(l.duration_min)}` : ''}, ${fmtNum(volume(l) / 1000, 1)} t</div></div><span class="chev">›</span></summary>
       <div style="margin-top:10px" class="small">${(l.entries || []).map(e => `<div style="margin:6px 0"><b>${esc(e.exercise)}</b>: ${(e.sets || []).map(s => `${esc(s.kg || '-')} kg x ${esc(s.reps || '-')}${s.rir !== undefined && s.rir !== '' ? ` (RIR ${esc(s.rir)})` : ''}`).join(', ')}</div>`).join('')}
       ${l.notes ? `<div class="card cream" style="margin-top:8px;padding:10px">${esc(l.notes)}</div>` : ''}
       <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="logSummary" data-id="${esc(l.id)}" data-cid="${esc(curCid())}">${icon('chart')} Ver resumen</button>
@@ -1898,7 +1915,7 @@ VIEWS.logSummary = async () => {
   const metsThisWeek = mets.some(m => weekStart(m.date) === weekStart(today()));
   const who = coach ? firstName(c.full_name) : '';
   return shell('Resumen del entreno', `
-    <div class="sum-head"><b>${esc(log.day_name || 'Entreno')}</b><span>${esc(cap(fmtDate(log.date, {weekday:'long', day:'numeric', month:'long'})))}${log.rpe ? `. Esfuerzo ${esc(log.rpe)} de 10` : ''}</span></div>
+    <div class="sum-head"><b>${esc(log.day_name || 'Entreno')}</b><span>${esc(cap(fmtDate(log.date, {weekday:'long', day:'numeric', month:'long'})))}${log.rpe ? `. Esfuerzo ${esc(log.rpe)} de 10` : ''}</span>${log.duration_min ? `<div class="sum-dur">${icon('clock')} Tiempo total de la sesión: <b>${durTxt(log.duration_min)}</b></div>` : ''}</div>
     <div class="stats">
       <div class="stat"><small>Series hechas</small><b>${nSets(log)}</b></div>
       <div class="stat"><small>Volumen</small><b>${fmtNum(vol / 1000, 1)}</b><i>t</i>${dvol != null ? `<i class="${dvol >= 0 ? 'down' : 'up'}">${sign(dvol, 0)} %</i>` : ''}</div>
@@ -2624,7 +2641,9 @@ const ACT = {
     if (!entries.length) return toast('Apunta al menos una serie');
     el.disabled = true;
     try {
-      const r = await saveOrQueue('log', {id: s.id, client_id: s.client_id, plan_id: s.plan_id, day_name: s.day_name, date: s.date, entries, rpe: s.rpe, notes: s.notes});
+      const dur = s._t0 ? Math.max(1, Math.round((Date.now() - s._t0) / 60000)) : null;
+      const r = await saveOrQueue('log', {id: s.id, client_id: s.client_id, plan_id: s.plan_id, day_name: s.day_name, date: s.date, entries, rpe: s.rpe, notes: s.notes, duration_min: dur});
+      try { localStorage.removeItem(t0Key(s.client_id, s.plan_id, s.day_name)); } catch(e){} clearInterval(sessT);
       toast(r._pending ? 'Guardado en el móvil. Se enviará al volver la conexión.' : '¡Entreno guardado! Buen trabajo', 3000);
       S.stack = []; S.view = 'train'; S.p = {}; go('logSummary', {id: s.id});
     } catch(e){ toast(e.message); el.disabled = false; }
@@ -2788,7 +2807,7 @@ const PRIVACY_HTML = `<h2>Política de privacidad</h2>
    Arranque
    ===================================================================== */
 /* Actualizaciones: al volver a la app busca versión nueva y, cuando se instala, recarga (sin perder lo que se está escribiendo) */
-const APP_VERSION = 35;
+const APP_VERSION = 36;
 if ('serviceWorker' in navigator){
   const had = !!navigator.serviceWorker.controller; let pend = false;
   const reloadSafe = () => { if (!S.draft) location.reload(); else pend = true; };
